@@ -1,0 +1,8 @@
+{
+  "name":"fisio-zap-backend",
+  "version":"0.1.0",
+  "private":true,
+  "type":"module",
+  "scripts":{"dev":"node --watch src/index.js","start":"node src/index.js"},
+  "dependencies":{"@supabase/supabase-js":"latest","dotenv":"latest","express":"latest"}
+}
