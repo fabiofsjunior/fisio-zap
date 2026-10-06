@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
-import { getCurrentMembership } from '@/lib/access';
+import { getCurrentMembership } from '@/lib/access-server';
 import FisioShell from '@/app/components/fisio-shell';
 
 export default async function Home() {
