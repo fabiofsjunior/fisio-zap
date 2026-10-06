@@ -1,12 +1,6 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
-import { createBrowserClient } from '@supabase/ssr';
-
-const supabase = createBrowserClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-);
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -21,23 +15,26 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
 
-    const { error: authError } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
+      const body = await response.json().catch(() => ({}));
 
-    if (authError) {
-      setError(
-        authError.message === 'Invalid login credentials'
-          ? 'E-mail ou senha inválidos.'
-          : 'Não foi possível entrar. Verifique a configuração do Supabase e tente novamente.',
-      );
+      if (!response.ok) {
+        setError(body.error || 'Não foi possível entrar. Tente novamente.');
+        setLoading(false);
+        return;
+      }
+
+      window.location.assign('/');
+    } catch {
+      setError('Não foi possível conectar ao servidor local. Verifique se o FisioZap está em execução.');
       setLoading(false);
-      return;
     }
-
-    // Refreshes the server components so proxy/page.tsx can observe the new auth cookies.
-    window.location.assign('/');
   }
 
   return (
