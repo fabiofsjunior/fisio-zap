@@ -1,31 +1,28 @@
 # FisioZap — Checkpoint global para agentes
 
 **Branch obrigatória:** `TESTES`  
-**Estado:** MVP web em integração; autenticação, Chat/API, smoke test e isolamento RLS validados no ambiente de teste.
+**Estado:** S1.5 em validação; autenticação e fluxo local permanecem preservados.
 
 ## Progresso em 06/10/2026
-- Segurança Supabase: hardening das funções `SECURITY DEFINER` aplicado e versionado.
-- Frontend: shell autenticado com **Chat | Painel**, logout e estados básicos implementados.
-- Backend: `POST /chat` com autenticação Bearer, validação, limite de tamanho, rate limit e fallback de demonstração implementado.
-- Autenticação: login pelo endpoint SSR `/api/auth/login` validado com a conta de teste.
-- Bootstrap: `npm run bootstrap:test-accounts` executado com sucesso.
-- Smoke test: `npm run test:smoke` executado com sucesso em **5/5**: login Supabase → identidade → health do backend → Chat autenticado → logout.
-- RLS: teste negativo entre organizações validado; leitura e alteração de paciente sem vínculo permanecem bloqueadas.
-- CI: workflow de `TESTES` valida build web e testes do backend.
-- Regra preservada: `main` não foi alterada.
-- APK continua fora do caminho crítico.
+- Login Supabase: validado e não alterado.
+- ADMIN e TESTE: sincronizados e funcionando.
+- Criação de usuário pelo launcher local: validada.
+- Smoke/RLS/backend health: previamente validados.
+- Auditoria do Supabase remoto realizada.
+- Drift de schema e de histórico de migrations documentado.
+- Migration de reconciliação aditiva criada em `TESTES`.
+- Hardening histórico tornado replay-safe.
+- CI de `TESTES` passou a validar replay das migrations e lint do schema.
+- Nenhum módulo funcional clínico foi iniciado.
 
-## Validação adicional do login
-Foi reproduzido o POST para `/api/auth/login` usando diretamente as credenciais carregadas de `.env.local`, com resposta HTTP 200. O login manual com `teste@fisiozap.local` também retorna HTTP 200. A falha observada para `admin@fisiozap.local` é específica da credencial digitada para essa conta, não do mecanismo de autenticação.
+## Estado da S1.5
+**Em validação — ainda não marcar como concluída.**
 
-## Bloqueio atual
-O schema remoto do Supabase está mais avançado que as migrations versionadas no repositório. O remoto possui, entre outras, as tabelas `clinical_notes`, `patient_groups`, `documents`, `skills` e `patient_protocols`, enquanto a base versionada ainda contém estruturas diferentes, incluindo `evolutions`. Portanto, ainda não é seguro declarar a base reproduzível.
+A reconciliação foi desenhada para não destruir os dados existentes. O remoto contém estruturas mais avançadas que o histórico Git, enquanto algumas estruturas/colunas MVP legadas ainda são mantidas na migration por segurança. A conclusão depende da execução verificável do reset/lint local e da confirmação do histórico remoto.
 
-A verificação atual do Security Advisor também identificou **1 aviso**: proteção contra senhas comprometidas (HaveIBeenPwned) desabilitada. Isso é uma melhoria de segurança separada do fluxo de autenticação já validado.
-
-## Próximo passo exato
-1. Reconciliar o schema remoto com as migrations versionadas sem alterar dados clínicos existentes.
-2. Gerar uma migration incremental e auditável para representar o schema real.
-3. Revisar RLS, grants, índices, constraints e funções das novas tabelas.
-4. Executar Security Advisor novamente.
-5. Validar em ambiente limpo antes de conectar dados clínicos reais e IA.
+## Próximos passos
+1. Aguardar/inspecionar o CI de `TESTES`.
+2. Corrigir qualquer falha de replay SQL.
+3. Executar os testes de smoke/RLS existentes.
+4. Confirmar histórico de migrations.
+5. Somente depois avançar para os módulos funcionais do FisioZap.
