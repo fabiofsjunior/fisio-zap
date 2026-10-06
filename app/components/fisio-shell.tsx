@@ -19,6 +19,7 @@ const modules = [
 export default function FisioShell({ email, role }: { email: string | null; role: FisioRole }) {
   const visibleModules = modules.filter(([, title]) => ROLE_MODULES[role].includes(title));
   const [tab, setTab] = useState<'chat' | 'panel'>('chat');
+  const [activeModule, setActiveModule] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -73,6 +74,52 @@ export default function FisioShell({ email, role }: { email: string | null; role
     );
     await supabase.auth.signOut();
     window.location.href = '/login';
+  }
+
+  const active = visibleModules.find(([, title]) => title === activeModule);
+
+  function openModule(title: string) {
+    setActiveModule(title);
+    setTab('panel');
+  }
+
+  function renderModuleScreen() {
+    if (!active) return null;
+    const [, title, description] = active;
+    const actions: Record<string, string[]> = {
+      'Minha rotina': ['Ver agenda de hoje', 'Registrar pendência'],
+      Pacientes: ['Novo paciente', 'Pesquisar pacientes'],
+      Agenda: ['Novo atendimento', 'Ver semana'],
+      Evoluções: ['Nova evolução', 'Revisar pendências'],
+      'Exercícios e protocolos': ['Novo exercício', 'Novo protocolo'],
+      Notificações: ['Ver pendências', 'Marcar como lida'],
+      Financeiro: ['Nova entrada', 'Nova despesa'],
+    };
+    return (
+      <section className="module-screen">
+        <button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button>
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">MÓDULO</span>
+            <h2>{title}</h2>
+            <p>{description}</p>
+          </div>
+          <span className="demo-badge">Disponível no perfil {role}</span>
+        </div>
+        <div className="module-actions">
+          {(actions[title] ?? ['Novo registro']).map((action) => (
+            <button key={action} type="button" className="action-card">
+              <strong>{action}</strong>
+              <span>Próximo ciclo</span>
+            </button>
+          ))}
+        </div>
+        <div className="panel empty-module">
+          <strong>{title} está pronto para receber os dados reais.</strong>
+          <p>Esta tela já faz parte da jornada autenticada. A próxima implementação conecta as ações ao Supabase com as regras de acesso do seu perfil.</p>
+        </div>
+      </section>
+    );
   }
 
   return (
@@ -139,6 +186,8 @@ export default function FisioShell({ email, role }: { email: string | null; role
             </button>
           </div>
         </section>
+      ) : activeModule ? (
+        renderModuleScreen()
       ) : (
         <section>
           <div className="panel-heading">
