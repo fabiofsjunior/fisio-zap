@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const backendUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001').replace(/\/$/, '');
+const frontendUrl = (process.env.FISIOZAP_FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
 const email = process.env.FISIOZAP_TEST_EMAIL;
 const password = process.env.FISIOZAP_TEST_PASSWORD;
 
@@ -19,21 +20,42 @@ const supabase = createClient(url, anonKey, {
   auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
 });
 
+async function testFrontendLogin(label, loginEmail, loginPassword) {
+  const response = await fetch(`${frontendUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+  });
+
+  const body = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(`${label} /api/auth/login respondeu HTTP ${response.status}: ${body.error || 'erro desconhecido'}`);
+  }
+
+  if (body.ok !== true) {
+    throw new Error(`${label} /api/auth/login não retornou { ok: true }.`);
+  }
+}
+
 async function main() {
-  console.log('1/5 Login Supabase...');
+  console.log('1/7 Login Supabase...');
   const { data: signIn, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
   if (signInError || !signIn.session) throw new Error(`Login falhou: ${signInError?.message || 'sessão ausente'}`);
   const accessToken = signIn.session.access_token;
 
-  console.log('2/5 Identidade autenticada...');
+  console.log('2/7 Login pela rota Next.js...');
+  await testFrontendLogin('TESTE', email, password);
+
+  console.log('3/7 Identidade autenticada...');
   const { data: userData, error: userError } = await supabase.auth.getUser(accessToken);
   if (userError || !userData.user) throw new Error(`getUser falhou: ${userError?.message || 'usuário ausente'}`);
 
-  console.log('3/5 Health do backend...');
+  console.log('4/7 Health do backend...');
   const health = await fetch(`${backendUrl}/health`);
   if (!health.ok) throw new Error(`Backend /health respondeu HTTP ${health.status}`);
 
-  console.log('4/5 Chat autenticado...');
+  console.log('5/7 Chat autenticado...');
   const chat = await fetch(`${backendUrl}/chat`, {
     method: 'POST',
     headers: {
@@ -48,14 +70,15 @@ async function main() {
     throw new Error('Resposta do /chat não corresponde ao contrato de demonstração.');
   }
 
-  console.log('5/5 Logout...');
+  console.log('6/7 Logout...');
   const { error: signOutError } = await supabase.auth.signOut({ scope: 'local' });
   if (signOutError) throw new Error(`Logout falhou: ${signOutError.message}`);
   const { data: sessionAfterLogout } = await supabase.auth.getSession();
   if (sessionAfterLogout.session) throw new Error('Sessão local permaneceu após logout.');
 
+  console.log('7/7 Contrato final...');
   console.log('');
-  console.log('SMOKE TEST OK — login → Chat → API → resposta → logout');
+  console.log('SMOKE TEST OK — Supabase → Next.js login → Chat → API → logout');
   console.log(`Usuário: ${userData.user.email || userData.user.id}`);
 }
 
