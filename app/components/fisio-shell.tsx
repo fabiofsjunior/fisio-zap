@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { ROLE_MODULES, type FisioRole } from '@/lib/access';
 import { createBrowserClient } from '@supabase/ssr';
 
 type Message = { id: number; role: 'user' | 'assistant'; text: string; mode?: 'demo' };
@@ -15,7 +16,8 @@ const modules = [
   ['💰', 'Financeiro', 'Entradas e despesas.'],
 ];
 
-export default function FisioShell({ email }: { email: string | null }) {
+export default function FisioShell({ email, role }: { email: string | null; role: FisioRole }) {
+  const visibleModules = modules.filter(([, title]) => ROLE_MODULES[role].includes(title));
   const [tab, setTab] = useState<'chat' | 'panel'>('chat');
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
@@ -81,7 +83,7 @@ export default function FisioShell({ email }: { email: string | null }) {
           <h1>{tab === 'chat' ? 'Assistente' : 'Painel'}</h1>
         </div>
         <div className="account">
-          <span title={email ?? undefined}>{email ?? 'Profissional autenticado'}</span>
+          <span title={email ?? undefined}>{email ?? 'Profissional autenticado'} · {role}</span>
           <button type="button" onClick={logout}>Sair</button>
         </div>
       </header>
@@ -144,10 +146,10 @@ export default function FisioShell({ email }: { email: string | null }) {
               <span className="eyebrow">CENTRAL DO PROFISSIONAL</span>
               <h2>Seu trabalho em um só lugar</h2>
             </div>
-            <span className="demo-badge">MVP de teste</span>
+            <span className="demo-badge">Perfil: {role}</span>
           </div>
           <div className="module-grid">
-            {modules.map(([icon, title, description]) => (
+            {visibleModules.map(([icon, title, description]) => (
               <article className="module-card" key={title}>
                 <span className="module-icon">{icon}</span>
                 <h3>{title}</h3>
@@ -158,7 +160,7 @@ export default function FisioShell({ email }: { email: string | null }) {
           </div>
           <div className="panel notice">
             <strong>Privacidade primeiro</strong>
-            <p>Dados clínicos só entram quando identidade, organização, profissional e autorização estiverem validados.</p>
+            <p>Seu perfil controla quais módulos aparecem. Dados clínicos só entram quando identidade, organização, profissional e autorização estiverem validados.</p>
           </div>
         </section>
       )}
