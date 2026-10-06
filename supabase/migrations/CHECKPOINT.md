@@ -1,49 +1,22 @@
 # Checkpoint — Banco de dados / migrations / RLS
 
-**Responsável lógico:** especialista de banco/Supabase em conjunto com segurança.  
-**Skills obrigatórias:**  
-- `skills://plugins/supabase/supabase/skill.md`
-- `skills://plugins/vibe-code-security-reviewer/supabase-rls-security/skill.md`
-- `skills://plugins/vibe-code-security-reviewer/threat-modeling/skill.md`
+**Responsável lógico:** especialista de banco/Supabase em conjunto com segurança.
 
-Leia `../../CHECKPOINT.md`, `../../docs/security.md` e `../../lib/supabase/CHECKPOINT.md`.
+## Execução — 06/10/2026
+- Projeto Supabase real: `fisio-zap` / `myjbyxzxdrvzhqkvsggj`, região `sa-east-1`, PostgreSQL 17.
+- RLS está habilitado nas tabelas expostas observadas.
+- O banco remoto possui schema mais avançado que as migrations versionadas no repositório; existe drift que precisa ser reconciliado antes de declarar reprodutibilidade.
+- O Security Advisor inicialmente encontrou 3 funções `SECURITY DEFINER` executáveis por `anon`/ `authenticated`.
+- Foi aplicada a migration remota `20261006173915_harden_security_definer_functions`.
+- As funções `is_org_member` e `is_org_admin` foram movidas para `private`, com execução apenas por `authenticated`; `handle_new_user` não é mais executável por `anon`/ `authenticated`.
+- O Security Advisor foi executado novamente e retornou **zero lints**.
+- A migration correspondente foi versionada em `supabase/migrations/20261006173915_harden_security_definer_functions.sql` na branch `TESTES`.
 
-## Estado conhecido no último levantamento
-- Existem migrations em `supabase/migrations/`, incluindo schema inicial e base do MVP.
-- A migration do MVP define tabelas de organizações, membros, perfis, pacientes, agenda, evoluções, notificações, exercícios, protocolos e financeiro.
-- A migration habilita RLS; isso, isoladamente, não prova que as policies estão corretas nem que as migrations foram aplicadas no ambiente.
-- O estado do banco remoto deve ser conferido antes de qualquer alteração.
+## Pendências críticas
+- [ ] Reconciliar migrations do Git com o histórico/schema remoto.
+- [ ] Criar e executar testes pgTAP/negativos para usuário A × usuário B.
+- [ ] Confirmar grants por tabela e operação, além de RLS.
+- [ ] Validar ambiente limpo reproduzindo o schema esperado.
 
-## Missão
-1. revisar todas as migrations existentes e sua ordem;
-2. confirmar que um ambiente limpo pode aplicar migrations de forma reproduzível;
-3. verificar grants, RLS e policies para SELECT/INSERT/UPDATE/DELETE;
-4. confirmar isolamento por organização e profissional em cada tabela relevante;
-5. avaliar funções, views e possíveis caminhos de elevação de privilégio;
-6. criar alterações apenas por novas migrations revisáveis;
-7. preparar dados de demonstração estritamente fictícios e removíveis, se necessário.
-
-## Regras
-- Nunca executar mudanças destrutivas no banco de produção para facilitar o teste.
-- Não inserir dados reais de pacientes para smoke tests.
-- Não desabilitar RLS para “fazer funcionar”.
-- Não considerar policy segura sem testar casos permitidos e negados.
-- Mudanças de schema devem ser versionadas em SQL; nunca depender somente de cliques manuais no painel.
-- Verificar se funções expostas concedem somente os privilégios necessários.
-- Não colocar segredos nas migrations.
-
-## Critérios de aceite
-- [ ] Migrations aplicam em sequência num ambiente de teste.
-- [ ] RLS está habilitada em todas as tabelas expostas.
-- [ ] Testes negativos confirmam que usuário A não acessa dados de B.
-- [ ] INSERT/UPDATE/DELETE respeitam organização e profissional, inclusive `WITH CHECK` quando aplicável.
-- [ ] Nenhuma policy permite acesso amplo acidental.
-- [ ] Resultado, comandos e limitações são registrados.
-
-## Próximo passo
-Ler integralmente as migrations existentes, mapear tabela → operações → policy, e validar o resultado no Supabase de teste. Não declarar seguro apenas por inspeção estática.
-
-## Registro de execução
-Agente: preencher ao trabalhar.  
-Data: preencher ao trabalhar.  
-Status: **pendente de validação por execução**.
+## Próximo passo exato
+Concluir a validação automatizada de RLS/isolation com dados fictícios e reconciliar o drift de migrations antes de conectar dados clínicos reais.
