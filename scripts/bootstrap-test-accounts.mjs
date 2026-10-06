@@ -22,7 +22,15 @@ async function findOrCreateUser(email, password, fullName) {
   const { data, error } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
   if (error) throw error;
   const existing = data.users.find((user) => user.email?.toLowerCase() === email.toLowerCase());
-  if (existing) return existing;
+  if (existing) {
+    const updated = await supabase.auth.admin.updateUserById(existing.id, {
+      password,
+      email_confirm: true,
+      user_metadata: { ...existing.user_metadata, full_name: fullName },
+    });
+    if (updated.error) throw updated.error;
+    return updated.data.user;
+  }
 
   const created = await supabase.auth.admin.createUser({
     email,
