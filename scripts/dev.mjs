@@ -58,9 +58,17 @@ const backend = spawnNode(['backend/src/index.js'], {
   NODE_ENV: 'development',
 });
 
+let frontend;
+const shutdown = () => {
+  backend.kill('SIGTERM');
+  frontend?.kill('SIGTERM');
+};
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
 try {
   await waitFor(`${backendUrl}/health`);
-  const frontend = spawnNode(['node_modules/next/dist/bin/next', 'dev', '-p', String(frontPort)], {
+  frontend = spawnNode(['node_modules/next/dist/bin/next', 'dev', '-p', String(frontPort)], {
     ...baseEnv,
     PORT: String(frontPort),
     NEXT_PUBLIC_BACKEND_URL: backendUrl,
@@ -71,14 +79,18 @@ try {
   openBrowser(frontUrl);
   console.log('FisioZap pronto. Ctrl+C encerra frontend e backend.');
 
-  const shutdown = () => {
+  frontend.once('exit', (code) => {
     backend.kill('SIGTERM');
-    frontend.kill('SIGTERM');
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+    if (code && code !== 0) process.exitCode = code;
+  });
+  backend.once('exit', (code) => {
+    if (code && code !== 0) {
+      frontend?.kill('SIGTERM');
+      process.exitCode = code;
+    }
+  });
 } catch (error) {
   console.error(error.message);
-  backend.kill('SIGTERM');
+  shutdown();
   process.exitCode = 1;
 }
