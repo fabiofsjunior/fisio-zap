@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "bootstrap:test-accounts": "node scripts/bootstrap-test-accounts.mjs"
+    "bootstrap:test-accounts": "node --env-file=.env.local scripts/bootstrap-test-accounts.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "0.12.7",
