@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 
 const RANGE_START = 3000;
 const RANGE_END = 4000;
+const ENV_FILE = '.env.local';
 
 function canListen(port) {
   return new Promise((resolve) => {
@@ -51,7 +52,7 @@ console.log(`FisioZap: frontend -> ${frontUrl}`);
 console.log(`FisioZap: backend  -> ${backendUrl}`);
 
 const baseEnv = { ...process.env };
-const backend = spawnNode(['backend/src/index.js'], {
+const backend = spawnNode(['--env-file', ENV_FILE, 'backend/src/index.js'], {
   ...baseEnv,
   PORT: String(backendPort),
   FRONTEND_ORIGIN: frontUrl,
