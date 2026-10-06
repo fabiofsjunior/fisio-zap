@@ -1,9 +1,9 @@
 import { redirect } from 'next/navigation';
-import { requireUser } from '@/lib/supabase/server';
+import { getCurrentMembership } from '@/lib/access';
 import FisioShell from '@/app/components/fisio-shell';
 
 export default async function Home() {
-  const user = await requireUser();
-  if (!user) redirect('/login');
-  return <FisioShell email={user.email ?? null} />;
+  const membership = await getCurrentMembership();
+  if (!membership) redirect('/login');
+  return <FisioShell email={membership.user.email ?? null} role={membership.role} />;
 }
