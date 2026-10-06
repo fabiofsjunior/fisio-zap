@@ -9,7 +9,8 @@
     "lint": "next lint",
     "bootstrap:test-accounts": "node --env-file=.env.local scripts/bootstrap-test-accounts.mjs",
     "test:smoke": "node --env-file=.env.local scripts/smoke-test.mjs",
-    "test:rls": "node --env-file=.env.local scripts/rls-negative-test.mjs"
+    "test:rls": "node --env-file=.env.local scripts/rls-negative-test.mjs",
+    "test:create-user": "node --env-file=.env.local scripts/create-test-user.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "0.12.7",
