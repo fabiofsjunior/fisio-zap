@@ -16,6 +16,7 @@
 ### Alterações versionadas em TESTES
 - `20261006173915_harden_security_definer_functions.sql` foi tornado replay-safe: não assume que assinaturas históricas já existam.
 - `20261006180000_reconcile_supabase_schema.sql` foi criada como reconciliação **aditiva e não destrutiva**.
+- `20261006190000_finalize_schema_reconciliation.sql` foi adicionada para normalizar o status de `appointments`, fechar a política RLS de `patient_groups` e criar índices para as FKs relevantes.
 - A migration adiciona tipos, tabelas/colunas/índices ausentes, funções privadas e políticas explícitas para `authenticated`, além de retirar acesso Data API de `anon`.
 - Colunas legadas não são removidas nesta primeira reconciliação quando a remoção poderia descartar dados. Elas ficam documentadas como drift residual para uma limpeza posterior, somente após prova de equivalência/migração de dados.
 - O workflow de TESTES agora inicializa um Supabase local, aplica todas as migrations, faz lint do schema e falha se houver erro.
