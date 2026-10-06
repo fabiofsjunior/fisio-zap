@@ -31,3 +31,19 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm test
+
+  database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.119.0
+      - name: Initialize local Supabase config
+        run: supabase init --force
+      - name: Start local Supabase
+        run: supabase start
+      - name: Reset from migrations
+        run: supabase db reset --local --no-seed
+      - name: Lint local schema
+        run: supabase db lint --local --fail-on error --schema public
