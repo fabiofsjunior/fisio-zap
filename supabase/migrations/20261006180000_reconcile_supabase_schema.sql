@@ -19,7 +19,7 @@ alter table public.organizations add constraint organizations_owner_id_fkey fore
 
 drop policy if exists "org members manage organizations" on public.organizations;
 
-do $begin if exists(select 1 from public.organization_members where role not in('owner','professional','coordinator','administrative')) then raise exception 'S1.5: unsupported membership role';end if;end$;
+do $$begin if exists(select 1 from public.organization_members where role not in('owner','professional','coordinator','administrative')) then raise exception 'S1.5: unsupported membership role';end if;end$$;
 alter table public.organization_members alter column role type public.app_role using role::public.app_role;
 
 create policy "org members manage organizations" on public.organizations
