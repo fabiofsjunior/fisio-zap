@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createApp } from '../src/index.js';
+process.env.NODE_ENV = 'test';
+const { createApp } = await import('../src/index.js');
 
 function startServer({ user = null } = {}) {
   const supabaseClientFactory = () => ({
