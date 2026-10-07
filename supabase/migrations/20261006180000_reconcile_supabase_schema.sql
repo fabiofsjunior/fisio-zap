@@ -19,6 +19,23 @@ alter table public.organizations add constraint organizations_owner_id_fkey fore
 
 do $$begin if exists(select 1 from public.organization_members where role not in('owner','professional','coordinator','administrative')) then raise exception 'S1.5: unsupported membership role';end if;end$$;
 alter table public.organization_members alter column role type public.app_role using role::public.app_role;
+
+create policy "org members manage organizations" on public.organizations
+  for update to authenticated
+  using (exists (
+    select 1 from public.organization_members m
+    where m.organization_id = organizations.id
+      and m.user_id = (select auth.uid())
+      and m.role = 'owner'
+  ))
+  with check (exists (
+    select 1 from public.organization_members m
+    where m.organization_id = organizations.id
+      and m.user_id = (select auth.uid())
+      and m.role = 'owner'
+  ));
+drop policy if exists "org members manage organizations" on public.organizations;
+
 alter table public.profiles add column if not exists professional_registration text;
 alter table public.profiles add column if not exists profession text default 'Fisioterapia';
 alter table public.profiles add column if not exists avatar_url text;
