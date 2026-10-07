@@ -40,8 +40,8 @@ jobs:
           version: 2.119.0
       - name: Initialize local Supabase config
         run: supabase init --force
-      - name: Start local Supabase
-        run: supabase start
+      - name: Start local Supabase database only
+        run: supabase start -x gotrue,realtime,storage-api,imgproxy,kong,mailpit,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
       - name: Reset from migrations
         run: supabase db reset --local --no-seed
       - name: Lint local schema
