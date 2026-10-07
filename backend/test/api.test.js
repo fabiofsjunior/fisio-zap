@@ -21,7 +21,10 @@ function startServer({ user = null } = {}) {
       const { port } = server.address();
       resolve({
         baseUrl: `http://127.0.0.1:${port}`,
-        close: () => new Promise((resolve, reject) => {\n          server.close((error) => (error ? reject(error) : resolve()));\n          server.closeAllConnections?.();\n        }),
+        close: () => new Promise((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+          server.closeAllConnections?.();
+        }),
       });
     });
   });
