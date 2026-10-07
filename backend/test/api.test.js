@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 process.env.NODE_ENV = 'test';
+process.env.NEXT_PUBLIC_SUPABASE_URL = 'http://test.local';
+process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = 'test-anon-key';
 const { createApp } = await import('../src/index.js');
 
 function startServer({ user = null } = {}) {
