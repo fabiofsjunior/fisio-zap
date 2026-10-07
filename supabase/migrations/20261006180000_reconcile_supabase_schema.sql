@@ -17,7 +17,9 @@ alter table public.organizations alter column owner_id set not null;
 alter table public.organizations drop constraint if exists organizations_owner_id_fkey;
 alter table public.organizations add constraint organizations_owner_id_fkey foreign key(owner_id) references auth.users(id) on delete restrict;
 
-do $$begin if exists(select 1 from public.organization_members where role not in('owner','professional','coordinator','administrative')) then raise exception 'S1.5: unsupported membership role';end if;end$$;
+drop policy if exists "org members manage organizations" on public.organizations;
+
+do $begin if exists(select 1 from public.organization_members where role not in('owner','professional','coordinator','administrative')) then raise exception 'S1.5: unsupported membership role';end if;end$;
 alter table public.organization_members alter column role type public.app_role using role::public.app_role;
 
 create policy "org members manage organizations" on public.organizations
