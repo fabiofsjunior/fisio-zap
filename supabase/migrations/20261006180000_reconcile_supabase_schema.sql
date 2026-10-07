@@ -44,6 +44,7 @@ alter table public.appointments add column if not exists duration_minutes intege
 alter table public.appointments add column if not exists protocol_name text;
 alter table public.appointments add column if not exists status_new public.appointment_status;
 update public.appointments set status_new=status::text::public.appointment_status where status_new is null;
+alter table public.appointments drop constraint if exists appointments_duration_minutes_check;
 alter table public.appointments add constraint appointments_duration_minutes_check check(duration_minutes between 5 and 480);
 
 create table if not exists public.clinical_notes(id uuid primary key default gen_random_uuid(),organization_id uuid not null references public.organizations(id) on delete cascade,patient_id uuid not null references public.patients(id) on delete cascade,appointment_id uuid references public.appointments(id) on delete set null,professional_id uuid not null references auth.users(id) on delete restrict,content text not null,ai_assisted boolean not null default false,confirmed_at timestamptz,created_at timestamptz not null default now(),updated_at timestamptz not null default now());
@@ -106,11 +107,24 @@ do $$declare t text;begin foreach t in array array['patients','appointments','cl
  execute format('drop policy if exists "scoped insert" on public.%I',t);
  execute format('drop policy if exists "scoped update" on public.%I',t);
  execute format('drop policy if exists "scoped delete" on public.%I',t);
- execute format('create policy "s15_select" on public.%I for select to authenticated using((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid()))',t);
- execute format('create policy "s15_insert" on public.%I for insert to authenticated with check((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid()))',t);
- execute format('create policy "s15_update" on public.%I for update to authenticated using((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())) with check((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid()))',t);
- execute format('create policy "s15_delete" on public.%I for delete to authenticated using((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid()))',t);
+ execute format('drop policy if exists "s15_select" on public.%I',t);
+ execute format('drop policy if exists "s15_insert" on public.%I',t);
+ execute format('drop policy if exists "s15_update" on public.%I',t);
+ execute format('drop policy if exists "s15_delete" on public.%I',t);
+ execute format('create policy "s15_select" on public.%I for select to authenticated using((select private.is_org_member(organization_id)) and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())))',t);
+ execute format('create policy "s15_insert" on public.%I for insert to authenticated with check((select private.is_org_member(organization_id)) and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())))',t);
+ execute format('create policy "s15_update" on public.%I for update to authenticated using((select private.is_org_member(organization_id)) and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid()))) with check((select private.is_org_member(organization_id)) and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())))',t);
+ execute format('create policy "s15_delete" on public.%I for delete to authenticated using((select private.is_org_member(organization_id)) and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())))',t);
 end loop;end$$;
+
+drop policy if exists "s15_patient_protocols_select" on public.patient_protocols;
+drop policy if exists "s15_patient_protocols_insert" on public.patient_protocols;
+drop policy if exists "s15_patient_protocols_update" on public.patient_protocols;
+drop policy if exists "s15_patient_protocols_delete" on public.patient_protocols;
+create policy "s15_patient_protocols_select" on public.patient_protocols for select to authenticated using((select private.is_org_member(organization_id)));
+create policy "s15_patient_protocols_insert" on public.patient_protocols for insert to authenticated with check((select private.is_org_member(organization_id)) and ((select private.is_org_admin(organization_id)) or exists(select 1 from public.patients p where p.id=patient_id and p.organization_id=organization_id and p.professional_id=(select auth.uid()))));
+create policy "s15_patient_protocols_update" on public.patient_protocols for update to authenticated using((select private.is_org_member(organization_id)) and ((select private.is_org_admin(organization_id)) or exists(select 1 from public.patients p where p.id=patient_id and p.organization_id=organization_id and p.professional_id=(select auth.uid())))) with check((select private.is_org_member(organization_id)) and ((select private.is_org_admin(organization_id)) or exists(select 1 from public.patients p where p.id=patient_id and p.organization_id=organization_id and p.professional_id=(select auth.uid()))));
+create policy "s15_patient_protocols_delete" on public.patient_protocols for delete to authenticated using((select private.is_org_member(organization_id)) and ((select private.is_org_admin(organization_id)) or exists(select 1 from public.patients p where p.id=patient_id and p.organization_id=organization_id and p.professional_id=(select auth.uid()))));
 
 create policy "s15_notifications_select" on public.notifications for select to authenticated using((select auth.uid())=user_id and (select private.is_org_member(organization_id)));
 create policy "s15_notifications_insert" on public.notifications for insert to authenticated with check((select auth.uid())=user_id and (select private.is_org_member(organization_id)));
