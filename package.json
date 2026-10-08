@@ -1,0 +1,28 @@
+{
+  "name": "fisio-zap-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "bootstrap:test-accounts": "node --env-file=.env.local scripts/bootstrap-test-accounts.mjs",
+    "test:smoke": "node --env-file=.env.local scripts/smoke-test.mjs",
+    "test:rls": "node --env-file=.env.local scripts/rls-negative-test.mjs",
+    "test:create-user": "node --env-file=.env.local scripts/create-test-user.mjs"
+  },
+  "dependencies": {
+    "@supabase/ssr": "0.12.7",
+    "@supabase/supabase-js": "2.117.1",
+    "next": "16.3.7",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.3",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "typescript": "latest"
+  }
+}
