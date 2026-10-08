@@ -1,12 +1,12 @@
 -- S2: harden the patient domain for organization-scoped CRUD.
 alter table public.patients add column if not exists email text;
 
-do $
+do $$
 begin
   if not exists (select 1 from pg_constraint where conname = 'organization_members_org_user_key') then
     alter table public.organization_members add constraint organization_members_org_user_key unique (organization_id, user_id);
   end if;
-end $;
+end $$;
 
 alter table public.patients drop constraint if exists patients_professional_org_fkey;
 alter table public.patients add constraint patients_professional_org_fkey
