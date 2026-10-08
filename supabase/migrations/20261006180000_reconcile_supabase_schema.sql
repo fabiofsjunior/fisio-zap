@@ -37,8 +37,6 @@ create policy "org members manage organizations" on public.organizations
       and m.user_id = (select auth.uid())
       and m.role = 'owner'
   ));
-drop policy if exists "org members manage organizations" on public.organizations;
-
 alter table public.profiles add column if not exists professional_registration text;
 alter table public.profiles add column if not exists profession text default 'Fisioterapia';
 alter table public.profiles add column if not exists avatar_url text;
