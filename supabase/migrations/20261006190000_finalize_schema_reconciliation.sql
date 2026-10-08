@@ -12,6 +12,11 @@ begin
       and column_name='status'
       and udt_name='text'
   ) then
+    -- PostgreSQL cannot automatically cast a text default to an enum.
+    -- Remove it before changing the type, then restore the enum default below.
+    alter table public.appointments
+      alter column status drop default;
+
     alter table public.appointments
       alter column status type public.appointment_status
       using status::text::public.appointment_status;
