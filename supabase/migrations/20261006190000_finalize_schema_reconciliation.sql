@@ -25,7 +25,7 @@ begin
       alter column status type public.appointment_status
       using status::text::public.appointment_status;
   end if;
-end $;
+end $$;
 
 -- Rebuild the legacy CHECK using enum values; safe when this migration is replayed.
 alter table public.appointments
