@@ -26,3 +26,7 @@ A reconciliação foi desenhada para não destruir os dados existentes. O remoto
 3. Executar os testes de smoke/RLS existentes.
 4. Confirmar histórico de migrations.
 5. Somente depois avançar para os módulos funcionais do FisioZap.
+
+## 08/10/2026 — retomada da TESTES
+- Branch `TESTES` recriada a partir da `main` para retomada controlada da validação da S1.5.
+- O commit deste checkpoint serve apenas para disparar novamente o CI; nenhuma funcionalidade de negócio foi iniciada.
