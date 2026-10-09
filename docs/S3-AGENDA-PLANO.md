@@ -27,8 +27,8 @@ Quando uma frente falhar, coletar logs, identificar causa específica, registrar
 - [x] S2 integrada na main.
 - [x] Branch de S3 criada.
 - [x] Escopo separado em quatro issues.
-- [ ] S3.1 schema e RLS implementados.
-- [ ] S3.2 API implementada.
-- [ ] S3.3 frontend implementado.
-- [ ] S3.4 CI e QA aprovados.
-- [ ] PR pronta para merge.
+- [x] S3.1 schema e RLS implementados.
+- [x] S3.2 API implementada.
+- [x] S3.3 frontend implementado.
+- [ ] S3.4 CI aprovado; QA funcional ponta a ponta pendente de evidências.
+- [x] PR #12 integrada na main (ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d).
