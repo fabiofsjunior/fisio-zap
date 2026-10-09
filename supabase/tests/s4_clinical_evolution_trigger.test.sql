@@ -56,23 +56,23 @@ select throws_ok(
 );
 
 select throws_ok(
-  $update public.clinical_encounters
+  $$update public.clinical_encounters
     set status='completed', completed_at=statement_timestamp()
-    where id='f3000000-0000-4000-8000-000000000002'$,
+    where id='f3000000-0000-4000-8000-000000000002'$$,
   'P0001', 'Confirm or delete draft evolutions before completing the encounter',
   'encounter cannot be completed while a draft remains'
 );
 
 select lives_ok(
-  $delete from public.clinical_evolutions
-    where id='f4000000-0000-4000-8000-000000000002'$,
+  $$delete from public.clinical_evolutions
+    where id='f4000000-0000-4000-8000-000000000002'$$,
   'draft evolution can be discarded before completion'
 );
 
 select lives_ok(
-  $update public.clinical_encounters
+  $$update public.clinical_encounters
     set status='completed', completed_at=statement_timestamp()
-    where id='f3000000-0000-4000-8000-000000000002'$,
+    where id='f3000000-0000-4000-8000-000000000002'$$,
   'encounter can be completed after draft resolution'
 );
 
