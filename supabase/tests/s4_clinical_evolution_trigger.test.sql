@@ -1,5 +1,5 @@
 begin;
-select plan(7);
+select plan(8);
 
 insert into auth.users (
   id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -55,18 +55,25 @@ select throws_ok(
   'confirmed evolution cannot be deleted'
 );
 
-select lives_ok(
-  $$update public.clinical_encounters
+select throws_ok(
+  $update public.clinical_encounters
     set status='completed', completed_at=statement_timestamp()
-    where id='f3000000-0000-4000-8000-000000000002'$$,
-  'encounter can be completed'
+    where id='f3000000-0000-4000-8000-000000000002'$,
+  'P0001', 'Confirm or delete draft evolutions before completing the encounter',
+  'encounter cannot be completed while a draft remains'
 );
 
-select throws_ok(
-  $$update public.clinical_evolutions set content='rascunho após fechar atendimento'
-    where id='f4000000-0000-4000-8000-000000000002'$$,
-  'P0001', 'Clinical evolutions require an in-progress encounter',
-  'draft evolution cannot be edited after encounter completion'
+select lives_ok(
+  $delete from public.clinical_evolutions
+    where id='f4000000-0000-4000-8000-000000000002'$,
+  'draft evolution can be discarded before completion'
+);
+
+select lives_ok(
+  $update public.clinical_encounters
+    set status='completed', completed_at=statement_timestamp()
+    where id='f3000000-0000-4000-8000-000000000002'$,
+  'encounter can be completed after draft resolution'
 );
 
 select throws_ok(
