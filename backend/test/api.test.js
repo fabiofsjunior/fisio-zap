@@ -59,8 +59,19 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
     }
   };
 }
-function startServer(options={}){const app=createApp({supabaseClientFactory:()=>mock(options)});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,close:()=>{server.close();server.closeAllConnections?.()}})))}
+function startServer(options={},supabaseClientFactory=()=>mock(options)){const app=createApp({supabaseClientFactory});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,close:()=>{server.close();server.closeAllConnections?.()}})))}
 async function request(baseUrl,path,options={}){return fetch(baseUrl+path,{...options,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...(options.headers||{})},body:options.body?JSON.stringify(options.body):undefined})}
+
+test('authenticated Supabase data client forwards the verified JWT for RLS',async()=>{
+  let accessToken;
+  const factory=(_url,_key,options)=>{accessToken=options.accessToken;return mock()};
+  const s=await startServer({},factory);
+  try{
+    const response=await request(s.baseUrl,'/encounters',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    assert.equal(await accessToken(),'valid');
+  }finally{await s.close()}
+});
 
 test('multiple memberships require an explicit authorized organization selection',async()=>{
   const memberships=[
