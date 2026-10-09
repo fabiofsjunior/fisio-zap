@@ -140,6 +140,23 @@ async function main() {
     const draftDelete = await client.from('clinical_evolutions').delete().eq('id', ownEvolution.id).select('id').maybeSingle();
     if (draftDelete.error || !draftDelete.data) throw new Error(`Trigger falhou ao excluir rascunho permitido: ${draftDelete.error?.message || 'nenhum registro removido'}`);
 
+    const terminalEncounter = await must(client.from('clinical_encounters').insert({
+      organization_id: orgId, patient_id: assignedPatient.id, professional_id: professional.id,
+    }).select('id').single(), 'criar atendimento sintético para teste de encerramento');
+    const completion = await client.from('clinical_encounters').update({ status: 'completed' })
+      .eq('id', terminalEncounter.id).select('id').maybeSingle();
+    if (completion.error || !completion.data) throw new Error(`Falha ao concluir atendimento sintético: ${completion.error?.message || 'nenhum registro alterado'}`);
+
+    const reopening = await client.from('clinical_encounters').update({ status: 'in_progress', completed_at: null })
+      .eq('id', terminalEncounter.id).select('id');
+    if (reopening.error) throw new Error(`Reabertura retornou erro inesperado: ${reopening.error.message}`);
+    if ((reopening.data ?? []).length) throw new Error('RLS falhou: profissional reabriu atendimento concluído.');
+
+    const completedDelete = await client.from('clinical_encounters').delete()
+      .eq('id', terminalEncounter.id).select('id');
+    if (completedDelete.error) throw new Error(`Exclusão retornou erro inesperado: ${completedDelete.error.message}`);
+    if ((completedDelete.data ?? []).length) throw new Error('RLS falhou: profissional excluiu atendimento concluído.');
+
     await client.auth.signOut({ scope: 'local' });
 
     console.log('RLS NEGATIVE TEST OK');
@@ -148,6 +165,7 @@ async function main() {
     console.log('Acesso a atendimento/evolução de colega na mesma organização: BLOQUEADO');
     console.log('Criação para paciente de colega e autoria forjada: BLOQUEADAS');
     console.log('Exclusão de rascunho próprio: PERMITIDA');
+    console.log('Reabertura e exclusão de atendimento concluído: BLOQUEADAS');
   } finally {
     for (const cleanupOrgId of [orgId, foreignOrgId].filter(Boolean)) {
       const cleanupSteps = [
