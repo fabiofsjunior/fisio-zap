@@ -17,8 +17,10 @@ create table public.clinical_encounters (
 );
 -- Appointment must belong to the same organization and patient/professional.
 alter table public.appointments add constraint appointments_s4_org_id_unique unique (organization_id,id);
-alter table public.clinical_encounters add constraint clinical_encounters_appointment_org_fk
- foreign key (organization_id,appointment_id) references public.appointments(organization_id,id) on delete restrict;
+alter table public.appointments add constraint appointments_s4_identity_unique unique (organization_id,id,patient_id,professional_id);
+alter table public.clinical_encounters add constraint clinical_encounters_appointment_identity_fk
+ foreign key (organization_id,appointment_id,patient_id,professional_id)
+ references public.appointments(organization_id,id,patient_id,professional_id) on delete restrict;
 create or replace function public.s4_validate_encounter_appointment() returns trigger language plpgsql set search_path = '' as $s4$
 begin
  if new.appointment_id is not null and not exists (
@@ -110,19 +112,37 @@ language plpgsql
 set search_path = ''
 as $s4$
 begin
- if old.status='in_progress' and new.status='completed' and exists (
-  select 1 from public.clinical_evolutions e
-  where e.organization_id=new.organization_id
-   and e.encounter_id=new.id
-   and e.status='draft'
- ) then
-  raise exception 'Confirm or delete draft evolutions before completing the encounter';
+ if old.status='completed' then
+  raise exception 'Completed clinical encounters are immutable';
  end if;
+ if new.id is distinct from old.id
+  or new.organization_id is distinct from old.organization_id
+  or new.patient_id is distinct from old.patient_id
+  or new.professional_id is distinct from old.professional_id
+  or new.appointment_id is distinct from old.appointment_id
+  or new.started_at is distinct from old.started_at
+  or new.created_at is distinct from old.created_at then
+  raise exception 'Clinical encounter identity is immutable';
+ end if;
+ if new.status='completed' then
+  if exists (
+   select 1 from public.clinical_evolutions e
+   where e.organization_id=new.organization_id
+    and e.encounter_id=new.id
+    and e.status='draft'
+  ) then
+   raise exception 'Confirm or delete draft evolutions before completing the encounter';
+  end if;
+  new.completed_at := statement_timestamp();
+ else
+  new.completed_at := null;
+ end if;
+ new.updated_at := statement_timestamp();
  return new;
 end
 $s4$;
 revoke all on function public.s4_validate_encounter_completion() from public, anon, authenticated;
-create trigger s4_encounter_completion_check before update of status on public.clinical_encounters
+create trigger s4_encounter_completion_check before update on public.clinical_encounters
  for each row execute function public.s4_validate_encounter_completion();
 
 create table public.clinical_exercises (
@@ -175,6 +195,7 @@ with check ((select private.is_org_member(organization_id))
   ))));
 create policy s4_encounters_update on public.clinical_encounters for update to authenticated
 using ((select private.is_org_member(organization_id))
+ and status='in_progress'
  and ((select private.is_org_admin(organization_id))
   or (professional_id=(select auth.uid()) and exists (
    select 1 from public.patients p
@@ -192,6 +213,7 @@ with check ((select private.is_org_member(organization_id))
   ))));
 create policy s4_encounters_delete on public.clinical_encounters for delete to authenticated
 using ((select private.is_org_member(organization_id))
+ and status='in_progress'
  and ((select private.is_org_admin(organization_id))
   or (professional_id=(select auth.uid()) and exists (
    select 1 from public.patients p
