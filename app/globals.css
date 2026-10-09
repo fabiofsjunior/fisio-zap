@@ -135,3 +135,46 @@ button:disabled{cursor:wait;opacity:.7}
 .patient-row span,.patient-row small{color:#69756e;font-size:13px}
 .patient-row small{line-height:1.4}
 @media(max-width:640px){.patient-form-grid{grid-template-columns:1fr}.patient-row{align-items:flex-start;flex-direction:column}.patient-row-actions{width:100%}.patient-row-actions button{flex:1}}
+
+
+.clinical-panel{gap:16px}
+.clinical-layout{display:grid;grid-template-columns:minmax(220px,.78fr) minmax(0,1.6fr);gap:16px;align-items:start}
+.clinical-history{position:sticky;top:16px}
+.clinical-section-heading,.clinical-entry-head,.clinical-actions{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.clinical-section-heading h3{margin:2px 0 6px}
+.clinical-section-heading p,.clinical-history>p,.clinical-section>p{color:#69756e;font-size:13px;line-height:1.45}
+.clinical-timeline,.clinical-resource-list{list-style:none;padding:0;margin:14px 0;display:grid;gap:8px}
+.clinical-timeline-item{display:grid;gap:4px;width:100%;padding:12px;text-align:left;border:1px solid #e1e7e3;border-radius:12px;background:#fff}
+.clinical-timeline-item span{font-size:12px;color:#69756e}
+.clinical-timeline-item.selected{border-color:#17352a;background:#f1f5f2}
+.clinical-primary,.clinical-secondary{border-radius:10px;padding:10px 14px;border:1px solid #17352a}
+.clinical-primary{background:#17352a;color:#fff}
+.clinical-secondary{background:#fff;color:#17352a}
+.clinical-primary:disabled,.clinical-secondary:disabled{opacity:.55}
+.clinical-history>.clinical-primary{width:100%;margin-top:8px}
+.clinical-section{border-top:1px solid #edf0ee;margin-top:22px;padding-top:18px}
+.clinical-section h4{margin:0 0 12px;font-size:17px}
+.clinical-list{display:grid;gap:12px}
+.clinical-entry{border:1px solid #e1e7e3;border-radius:14px;padding:15px}
+.clinical-entry-head{font-size:13px}
+.clinical-entry-head time{font-size:11px;color:#69756e}
+.clinical-content{white-space:pre-wrap;line-height:1.6;font-size:14px}
+.clinical-review{margin-top:12px;padding:14px;background:#fff8e8;border:1px solid #ead5a0;border-radius:12px}
+.clinical-review p{white-space:pre-wrap;line-height:1.5;font-size:14px}
+.clinical-form{display:grid;gap:10px;margin-top:16px;padding:15px;background:#f8faf8;border:1px solid #e1e7e3;border-radius:14px}
+.clinical-form label{font-size:13px;font-weight:700}
+.clinical-form textarea{resize:vertical}
+.clinical-actions{justify-content:flex-start;flex-wrap:wrap;margin-top:10px}
+.clinical-resource-list li{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:12px;border:1px solid #e1e7e3;border-radius:12px}
+.clinical-resource-list li>div{min-width:0}
+.clinical-resource-list p{margin:5px 0 0;color:#69756e;white-space:pre-wrap;line-height:1.45;font-size:13px}
+.clinical-notice{border-color:#bed7c8;background:#f2faf5}
+.clinical-error{border-color:#e7b7b7;background:#fff6f6;color:#7b2424}
+.clinical-error p{margin:6px 0 0;line-height:1.5}
+.clinical-empty p{color:#69756e;line-height:1.5}
+.agenda-appointment-details{min-width:0}
+.agenda-appointment-details strong{font-variant-numeric:tabular-nums}
+.module-screen> .panel ul:not(.clinical-timeline):not(.clinical-resource-list) li{display:grid;grid-template-columns:minmax(130px,1fr) minmax(140px,.65fr) auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #edf0ee}
+.module-screen> .panel ul:not(.clinical-timeline):not(.clinical-resource-list) li:last-child{border-bottom:0}
+@media(max-width:760px){.clinical-layout{grid-template-columns:1fr}.clinical-history{position:static}.clinical-timeline{grid-template-columns:1fr 1fr}.module-screen> .panel ul:not(.clinical-timeline):not(.clinical-resource-list) li{grid-template-columns:1fr}.module-screen> .panel ul:not(.clinical-timeline):not(.clinical-resource-list) li label{display:grid;grid-template-columns:auto minmax(100px,1fr);align-items:center;gap:10px}}
+@media(max-width:480px){.clinical-timeline{grid-template-columns:1fr}.clinical-section-heading{align-items:flex-start;flex-direction:column}.clinical-resource-list li{flex-direction:column}.clinical-resource-list button{width:100%}.clinical-actions>*{flex:1}}
