@@ -31,6 +31,12 @@ export default function AgendaPanel({ organizationId, userId, canManageClinicalR
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const refreshRequestId = useRef(0);
+  const currentView = useRef({ organizationId, day });
+  currentView.current = { organizationId, day };
+
+  function isCurrentView(context: { organizationId: string; day: string }) {
+    return currentView.current.organizationId === context.organizationId && currentView.current.day === context.day;
+  }
   const [clinicalContext, setClinicalContext] = useState<{ patientId: string; patientName: string; appointmentId?: string; canStartAppointment: boolean } | null>(null);
 
   const refresh = useCallback(async () => {
@@ -61,25 +67,29 @@ export default function AgendaPanel({ organizationId, userId, canManageClinicalR
 
   async function create(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const context = { organizationId, day };
     try {
       await callApi(organizationId, '/appointments', {
         method: 'POST',
         body: JSON.stringify({ patient_id: patientId, starts_at: new Date(start).toISOString(), ends_at: new Date(end).toISOString() }),
       });
+      if (!isCurrentView(context)) return;
       setStart('');
       setEnd('');
       await refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Falha ao agendar.');
+      if (isCurrentView(context)) setError(cause instanceof Error ? cause.message : 'Falha ao agendar.');
     }
   }
 
   async function changeStatus(id: string, status: string) {
+    const context = { organizationId, day };
     try {
       await callApi(organizationId, '/appointments/' + id, { method: 'PATCH', body: JSON.stringify({ status }) });
+      if (!isCurrentView(context)) return;
       await refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Falha ao atualizar.');
+      if (isCurrentView(context)) setError(cause instanceof Error ? cause.message : 'Falha ao atualizar.');
     }
   }
 
