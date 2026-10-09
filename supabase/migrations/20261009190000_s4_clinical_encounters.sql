@@ -192,6 +192,29 @@ create table public.clinical_encounter_protocols (
 -- Add composite organization scoping for protocol references.
 alter table public.clinical_protocols add constraint clinical_protocols_org_id_unique unique (organization_id,id);
 alter table public.clinical_encounter_protocols add constraint clinical_encounter_protocols_org_fk foreign key (organization_id,protocol_id) references public.clinical_protocols(organization_id,id);
+
+-- Creation timestamps are audit metadata and must remain server-controlled.
+create or replace function public.s4_protect_clinical_created_at()
+returns trigger
+language plpgsql
+set search_path = ''
+as $s4$
+begin
+ if tg_op='INSERT' then
+  new.created_at := statement_timestamp();
+ elsif new.created_at is distinct from old.created_at then
+  raise exception 'Clinical record creation timestamp is immutable';
+ end if;
+ return new;
+end
+$s4$;
+revoke all on function public.s4_protect_clinical_created_at() from public, anon, authenticated;
+create trigger s4_exercise_created_at
+ before insert or update on public.clinical_exercises
+ for each row execute function public.s4_protect_clinical_created_at();
+create trigger s4_protocol_created_at
+ before insert or update on public.clinical_protocols
+ for each row execute function public.s4_protect_clinical_created_at();
 -- Organization membership establishes the outer boundary; clinical rows are then
 -- limited to the responsible professional or an organization administrator.
 alter table public.clinical_encounters enable row level security;
