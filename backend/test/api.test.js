@@ -43,6 +43,8 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
         update(v){state.operation='update';state.values=v;return api},
         delete(){state.operation='delete';return api},
         single:async()=>{
+          const operationError=operationErrors[state.table]?.[state.operation];
+          if(operationError)return {data:null,error:operationError};
           if(state.operation==='insert'){const row={...state.values};tableRows.push(row);return {data:row,error:null};}
           return {data:state.values,error:null};
         },
@@ -59,7 +61,7 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
     }
   };
 }
-function startServer(options={},supabaseClientFactory=()=>mock(options)){const app=createApp({supabaseClientFactory});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,close:()=>{server.close();server.closeAllConnections?.()}})))}
+function startServer(options={},supabaseClientFactory=null){const database=mock(options);const app=createApp({supabaseClientFactory:supabaseClientFactory??(()=>database)});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,close:()=>{server.close();server.closeAllConnections?.()}})))}
 async function request(baseUrl,path,options={}){return fetch(baseUrl+path,{...options,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...(options.headers||{})},body:options.body?JSON.stringify(options.body):undefined})}
 
 test('authenticated Supabase data client forwards the verified JWT for RLS',async()=>{
@@ -269,29 +271,15 @@ test('appointment update rejects invalid id',async()=>{const s=await startServer
 test('appointment listing rejects invalid status',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/appointments?status=unknown',{headers:{Authorization:'Bearer valid'}});assert.equal(r.status,422);await s.close()});
 
 test('appointment conflict returns HTTP 409',async()=>{
-  const user={id:'11111111-1111-4111-8111-111111111111'};
-  const membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'};
   const patientId='33333333-3333-4333-8333-333333333333';
-  const factory=()=>({
-    auth:{getUser:async()=>({data:{user},error:null})},
-    from(table){
-      const api={
-        select(){return api},eq(){return api},order(){return api},limit(){return api},
-        maybeSingle:async()=>({data:table==='organization_members'?membership:{id:patientId},error:null}),
-        insert(){return api},
-        single:async()=>({data:null,error:{code:'23P01'}}),
-      };
-      return api;
-    }
+  const s=await startServer({
+    patients:[{id:patientId,organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111'}],
+    operationErrors:{appointments:{insert:{code:'23P01'}}},
   });
-  const app=createApp({supabaseClientFactory:factory});
-  const server=http.createServer(app);
-  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  const baseUrl='http://127.0.0.1:'+server.address().port;
   try {
-    const response=await request(baseUrl,'/appointments',{method:'POST',headers:{Authorization:'Bearer valid'},body:{
+    const response=await request(s.baseUrl,'/appointments',{method:'POST',headers:{Authorization:'Bearer valid'},body:{
       patient_id:patientId,starts_at:'2026-10-12T13:00:00Z',ends_at:'2026-10-12T14:00:00Z'
     }});
     assert.equal(response.status,409);
-  }finally{server.close();server.closeAllConnections?.();}
+  }finally{await s.close()}
 });
