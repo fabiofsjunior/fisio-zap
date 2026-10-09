@@ -19,7 +19,7 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
   app.use((req, res, next) => {
     const origin = req.headers.origin;
     if (origin === frontendOrigin) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin'); }
-    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-FisioZap-Organization-Id');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
@@ -243,10 +243,15 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
   // S4.2: clinical encounters. Organization is always resolved from the session.
   const ENCOUNTER_FIELDS = 'id,organization_id,patient_id,professional_id,appointment_id,status,started_at,completed_at,created_at,updated_at';
   const EVOLUTION_FIELDS = 'id,organization_id,encounter_id,author_id,content,status,confirmed_at,created_at,updated_at';
+  function canManageClinicalRecords(membership) {
+    return membership.role === 'owner' || membership.role === 'coordinator';
+  }
   async function getScopedEncounter(req, membership, id) {
     if (!isUuid(id)) return null;
-    const { data, error } = await req.supabase.from('clinical_encounters')
-      .select(ENCOUNTER_FIELDS).eq('id', id).eq('organization_id', membership.organization_id).maybeSingle();
+    let query = req.supabase.from('clinical_encounters')
+      .select(ENCOUNTER_FIELDS).eq('id', id).eq('organization_id', membership.organization_id);
+    if (!canManageClinicalRecords(membership)) query = query.eq('professional_id', req.user.id);
+    const { data, error } = await query.maybeSingle();
     return error ? null : data;
   }
   app.get('/encounters', rateLimit, requireAuth, async (req, res) => {
@@ -254,6 +259,7 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     if (req.query.patient_id && !isUuid(req.query.patient_id)) return res.status(422).json({error:'Paciente inválido.'});
     let query = req.supabase.from('clinical_encounters').select(ENCOUNTER_FIELDS)
       .eq('organization_id', membership.organization_id).order('started_at',{ascending:false}).limit(100);
+    if (!canManageClinicalRecords(membership)) query=query.eq('professional_id',req.user.id);
     if (req.query.patient_id) query=query.eq('patient_id',req.query.patient_id);
     const {data,error}=await query;
     if (error) return res.status(400).json({error:'Não foi possível consultar os atendimentos.'});
@@ -267,6 +273,8 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     const {data:patient,error:patientError}=await req.supabase.from('patients').select('id,professional_id')
       .eq('id',patient_id).eq('organization_id',membership.organization_id).maybeSingle();
     if (patientError || !patient) return res.status(404).json({error:'Paciente não encontrado.'});
+    if (!canManageClinicalRecords(membership) && patient.professional_id !== req.user.id)
+      return res.status(403).json({error:'Paciente atribuído a outro profissional.'});
     const professional_id=req.user.id;
     if (!(await verifyProfessionalMembership(req.supabase,membership.organization_id,professional_id)))
       return res.status(403).json({error:'Profissional sem autorização.'});
@@ -287,11 +295,14 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     const membership=await appointmentScope(req,res);if(!membership)return;
     const encounter=await getScopedEncounter(req,membership,req.params.id);
     if(!encounter)return res.status(404).json({error:'Atendimento não encontrado.'});
-    if(encounter.professional_id!==req.user.id)return res.status(403).json({error:'Profissional não autorizado.'});
     if(encounter.status!=='in_progress')return res.status(409).json({error:'Atendimento já finalizado.'});
-    const {data,error}=await req.supabase.from('clinical_encounters').update({
-      status:'completed',completed_at:new Date().toISOString(),updated_at:new Date().toISOString()
-    }).eq('id',encounter.id).eq('organization_id',membership.organization_id)
+    const {data:drafts,error:draftError}=await req.supabase.from('clinical_evolutions').select('id')
+      .eq('organization_id',membership.organization_id).eq('encounter_id',encounter.id)
+      .eq('status','draft').limit(1);
+    if(draftError)return res.status(400).json({error:'Não foi possível validar as evoluções pendentes.'});
+    if((drafts??[]).length)return res.status(409).json({error:'Confirme ou exclua as evoluções em rascunho antes de finalizar.'});
+    const {data,error}=await req.supabase.from('clinical_encounters').update({status:'completed'})
+      .eq('id',encounter.id).eq('organization_id',membership.organization_id)
       .eq('status','in_progress').select(ENCOUNTER_FIELDS).maybeSingle();
     if(error)return res.status(400).json({error:'Não foi possível finalizar o atendimento.'});
     if(!data)return res.status(409).json({error:'Atendimento alterado simultaneamente.'});
@@ -322,6 +333,29 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     if(error)return res.status(400).json({error:'Não foi possível salvar a evolução.'});
     return res.status(201).json({evolution:data});
   });
+  app.patch('/evolutions/:id',rateLimit,requireAuth,async(req,res)=>{
+    const membership=await appointmentScope(req,res);if(!membership)return;
+    if(!isUuid(req.params.id))return res.status(400).json({error:'Evolução inválida.'});
+    const keys=Object.keys(req.body??{});
+    if(keys.length!==1||keys[0]!=='content')return res.status(422).json({error:'Informe somente o conteúdo da evolução.'});
+    const content=req.body.content;
+    if(typeof content!=='string'||content.trim().length<1||content.length>10000)
+      return res.status(422).json({error:'Evolução deve conter entre 1 e 10000 caracteres.'});
+    const {data:existing,error:lookupError}=await req.supabase.from('clinical_evolutions').select(EVOLUTION_FIELDS)
+      .eq('id',req.params.id).eq('organization_id',membership.organization_id).maybeSingle();
+    if(lookupError||!existing)return res.status(404).json({error:'Evolução não encontrada.'});
+    if(existing.author_id!==req.user.id)return res.status(403).json({error:'Autor não autorizado.'});
+    if(existing.status!=='draft')return res.status(409).json({error:'Evolução já confirmada.'});
+    const encounter=await getScopedEncounter(req,membership,existing.encounter_id);
+    if(!encounter)return res.status(404).json({error:'Atendimento não encontrado.'});
+    if(encounter.status!=='in_progress')return res.status(409).json({error:'Atendimento finalizado.'});
+    const {data,error}=await req.supabase.from('clinical_evolutions').update({content:content.trim()})
+      .eq('id',existing.id).eq('organization_id',membership.organization_id).eq('status','draft')
+      .select(EVOLUTION_FIELDS).maybeSingle();
+    if(error)return res.status(400).json({error:'Não foi possível atualizar a evolução.'});
+    if(!data)return res.status(409).json({error:'Evolução alterada simultaneamente.'});
+    return res.json({evolution:data});
+  });
   app.patch('/evolutions/:id/confirm',rateLimit,requireAuth,async(req,res)=>{
     const membership=await appointmentScope(req,res);if(!membership)return;
     if(!isUuid(req.params.id))return res.status(400).json({error:'Evolução inválida.'});
@@ -330,6 +364,9 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     if(lookupError||!existing)return res.status(404).json({error:'Evolução não encontrada.'});
     if(existing.author_id!==req.user.id)return res.status(403).json({error:'Autor não autorizado.'});
     if(existing.status!=='draft')return res.status(409).json({error:'Evolução já confirmada.'});
+    const encounter=await getScopedEncounter(req,membership,existing.encounter_id);
+    if(!encounter)return res.status(404).json({error:'Atendimento não encontrado.'});
+    if(encounter.status!=='in_progress')return res.status(409).json({error:'Atendimento finalizado.'});
     const {data,error}=await req.supabase.from('clinical_evolutions').update({
       status:'confirmed',confirmed_at:new Date().toISOString(),updated_at:new Date().toISOString()
     }).eq('id',existing.id).eq('organization_id',membership.organization_id)
@@ -545,14 +582,15 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     return res.status(201).json({ association: data });
   });
 
-  app.delete('/encounters/:id/protocols/:protocolId', rateLimit, requireAuth, async (req, res) => {
+  app.delete('/encounters/:id/protocols', rateLimit, requireAuth, async (req, res) => {
     const membership = await appointmentScope(req, res); if (!membership) return;
-    if (!isUuid(req.params.protocolId)) return res.status(400).json({ error: 'Protocolo inválido.' });
+    const protocolId = req.body?.protocol_id;
+    if (!isUuid(protocolId)) return res.status(422).json({ error: 'Protocolo inválido.' });
     const encounter = await getOwnedInProgressEncounter(req, res, membership, req.params.id);
     if (!encounter) return;
     const { data, error } = await req.supabase.from('clinical_encounter_protocols').delete()
       .eq('organization_id', membership.organization_id).eq('encounter_id', encounter.id)
-      .eq('protocol_id', req.params.protocolId).select('protocol_id').maybeSingle();
+      .eq('protocol_id', protocolId).select('protocol_id').maybeSingle();
     if (error) return res.status(400).json({ error: 'Não foi possível remover o protocolo do atendimento.' });
     if (!data) return res.status(404).json({ error: 'Vínculo de protocolo não encontrado.' });
     return res.status(204).send();
