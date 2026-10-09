@@ -74,6 +74,21 @@ async function main() {
       professional_id: owner.id,
       full_name: `Paciente RLS outra organização ${suffix}`,
     }).select('id').single(), 'criar paciente da organização sem vínculo');
+    const foreignEncounter = await must(admin.from('clinical_encounters').insert({
+      organization_id: foreignOrgId, patient_id: foreignPatient.id, professional_id: owner.id,
+    }).select('id').single(), 'criar atendimento de outra organização');
+    const foreignExercise = await must(admin.from('clinical_exercises').insert({
+      organization_id: foreignOrgId, encounter_id: foreignEncounter.id, title: 'Exercício estrangeiro sintético',
+    }).select('id').single(), 'criar exercício de outra organização');
+    const protocol = await must(admin.from('clinical_protocols').insert({
+      organization_id: orgId, title: `Protocolo RLS ${suffix}`,
+    }).select('id').single(), 'criar protocolo sintético da organização');
+    const foreignProtocol = await must(admin.from('clinical_protocols').insert({
+      organization_id: foreignOrgId, title: `Protocolo estrangeiro ${suffix}`,
+    }).select('id').single(), 'criar protocolo sintético de outra organização');
+    await must(admin.from('clinical_encounter_protocols').insert({
+      organization_id: foreignOrgId, encounter_id: foreignEncounter.id, protocol_id: foreignProtocol.id,
+    }), 'associar protocolo sintético a atendimento estrangeiro');
     const assignedPatient = await must(admin.from('patients').insert({
       organization_id: orgId,
       professional_id: professional.id,
@@ -96,6 +111,12 @@ async function main() {
     if (!ownMembership.some((membership) => membership.organization_id === orgId)) throw new Error('Membership da organização de teste não foi aplicada.');
     const foreignRead = await must(client.from('patients').select('id').eq('id', foreignPatient.id), 'testar leitura cruzada');
     if (foreignRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler paciente de organização sem vínculo.');
+    const foreignExerciseRead = await must(client.from('clinical_exercises').select('id').eq('id', foreignExercise.id), 'testar leitura de exercício entre organizações');
+    if (foreignExerciseRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler exercício de outra organização.');
+    const foreignProtocolRead = await must(client.from('clinical_protocols').select('id').eq('id', foreignProtocol.id), 'testar leitura de protocolo entre organizações');
+    if (foreignProtocolRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler protocolo de outra organização.');
+    const foreignProtocolLinkRead = await must(client.from('clinical_encounter_protocols').select('protocol_id').eq('encounter_id', foreignEncounter.id), 'testar leitura de vínculo clínico entre organizações');
+    if (foreignProtocolLinkRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler vínculo clínico de outra organização.');
 
     const foreignUpdate = await client.from('patients').update({ notes: 'bloqueio RLS' }).eq('id', foreignPatient.id).select('id');
     if (foreignUpdate.error) throw new Error(`RLS update retornou erro inesperado: ${foreignUpdate.error.message}`);
@@ -110,6 +131,47 @@ async function main() {
       organization_id: orgId, encounter_id: ownEncounter.id, author_id: professional.id,
       content: 'Rascunho sintético autorizado.',
     }).select('id').single(), 'registrar rascunho próprio');
+    const ownExercise = await must(client.from('clinical_exercises').insert({
+      organization_id: orgId, encounter_id: ownEncounter.id, title: 'Exercício próprio sintético',
+    }).select('id').single(), 'associar exercício ao próprio atendimento');
+    const ownExerciseUpdate = await client.from('clinical_exercises').update({ title: 'Exercício próprio atualizado' })
+      .eq('id', ownExercise.id).select('id').maybeSingle();
+    if (ownExerciseUpdate.error || !ownExerciseUpdate.data) throw new Error(`Profissional não conseguiu atualizar exercício próprio: ${ownExerciseUpdate.error?.message || 'nenhum registro alterado'}`);
+    const movedExercise = await client.from('clinical_exercises').update({ organization_id: foreignOrgId })
+      .eq('id', ownExercise.id).select('id').maybeSingle();
+    expectDeniedByPolicy(movedExercise, 'mover exercício próprio para outra organização');
+
+    const ownProtocol = await must(client.from('clinical_protocols').select('id').eq('id', protocol.id), 'ler protocolo da própria organização');
+    if (ownProtocol.length !== 1) throw new Error('RLS bloqueou protocolo da própria organização.');
+    const forbiddenProtocolInsert = await client.from('clinical_protocols').insert({
+      organization_id: orgId, title: 'Protocolo não autorizado',
+    }).select('id').maybeSingle();
+    expectDeniedByPolicy(forbiddenProtocolInsert, 'profissional criar protocolo reservado a responsável');
+    const deniedProtocolUpdate = await client.from('clinical_protocols').update({ title: 'Tentativa de alteração' })
+      .eq('id', protocol.id).select('id');
+    if (deniedProtocolUpdate.error) throw new Error(`Atualização de protocolo retornou erro inesperado: ${deniedProtocolUpdate.error.message}`);
+    if ((deniedProtocolUpdate.data ?? []).length) throw new Error('RLS falhou: profissional alterou protocolo administrativo.');
+    const deniedProtocolDelete = await client.from('clinical_protocols').delete().eq('id', protocol.id).select('id');
+    if (deniedProtocolDelete.error) throw new Error(`Exclusão de protocolo retornou erro inesperado: ${deniedProtocolDelete.error.message}`);
+    if ((deniedProtocolDelete.data ?? []).length) throw new Error('RLS falhou: profissional excluiu protocolo administrativo.');
+
+    const ownProtocolLink = await must(client.from('clinical_encounter_protocols').insert({
+      organization_id: orgId, encounter_id: ownEncounter.id, protocol_id: protocol.id,
+    }).select().single(), 'vincular protocolo ao próprio atendimento');
+    if (!ownProtocolLink) throw new Error('Falha ao criar vínculo autorizado do protocolo.');
+    const peerProtocolLink = await client.from('clinical_encounter_protocols').insert({
+      organization_id: orgId, encounter_id: ownerEncounter.id, protocol_id: protocol.id,
+    }).select().maybeSingle();
+    expectDeniedByPolicy(peerProtocolLink, 'associar protocolo a atendimento de outro profissional');
+    const foreignProtocolLink = await client.from('clinical_encounter_protocols').insert({
+      organization_id: orgId, encounter_id: ownEncounter.id, protocol_id: foreignProtocol.id,
+    }).select().maybeSingle();
+    expectDeniedByPolicy(foreignProtocolLink, 'associar protocolo de outra organização');
+
+    const foreignExerciseInsert = await client.from('clinical_exercises').insert({
+      organization_id: foreignOrgId, encounter_id: foreignEncounter.id, title: 'Tentativa de exercício cruzado',
+    }).select('id').maybeSingle();
+    expectDeniedByPolicy(foreignExerciseInsert, 'inserir exercício em organização sem vínculo');
     const peerEncounter = await must(client.from('clinical_encounters').select('id').eq('id', ownerEncounter.id), 'ler atendimento de outro profissional');
     if (peerEncounter.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler atendimento de outro profissional na mesma organização.');
     const peerEvolution = await must(client.from('clinical_evolutions').select('id').eq('id', ownerEvolution.id), 'ler evolução de outro profissional');
@@ -163,6 +225,7 @@ async function main() {
     console.log(`Memberships do profissional: ${ownMembership.length}`);
     console.log('Leitura/alteração em outra organização: BLOQUEADAS');
     console.log('Acesso a atendimento/evolução de colega na mesma organização: BLOQUEADO');
+    console.log('CRUD de exercício próprio e isolamento de exercícios/protocolos/vínculos: VERIFICADOS');
     console.log('Criação para paciente de colega e autoria forjada: BLOQUEADAS');
     console.log('Exclusão de rascunho próprio: PERMITIDA');
     console.log('Reabertura e exclusão de atendimento concluído: BLOQUEADAS');
