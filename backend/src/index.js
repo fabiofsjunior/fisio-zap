@@ -304,6 +304,7 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     const {data,error}=await req.supabase.from('clinical_encounters').update({status:'completed'})
       .eq('id',encounter.id).eq('organization_id',membership.organization_id)
       .eq('status','in_progress').select(ENCOUNTER_FIELDS).maybeSingle();
+    if(error?.code==='P0001')return res.status(409).json({error:'Atendimento alterado ou com evoluções pendentes.'});
     if(error)return res.status(400).json({error:'Não foi possível finalizar o atendimento.'});
     if(!data)return res.status(409).json({error:'Atendimento alterado simultaneamente.'});
     return res.json({encounter:data});
