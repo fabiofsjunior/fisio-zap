@@ -137,6 +137,77 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     return res.status(204).send();
   });
 
+  const APPOINTMENT_FIELDS = 'id,organization_id,professional_id,patient_id,starts_at,ends_at,status,notes,created_at,updated_at';
+  const APPOINTMENT_STATUSES = new Set(['scheduled','confirmed','completed','cancelled','no_show','rescheduled']);
+  const isUuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+  function validateAppointment(body, partial = false) {
+    const errors = {};
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return { body: 'Objeto obrigatório.' };
+    if (!partial || body.patient_id !== undefined) if (!isUuid(body.patient_id)) errors.patient_id = 'Paciente inválido.';
+    if (body.professional_id !== undefined && !isUuid(body.professional_id)) errors.professional_id = 'Profissional inválido.';
+    for (const field of ['starts_at','ends_at']) if (!partial || body[field] !== undefined) {
+      if (typeof body[field] !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}T/.test(body[field]) || !/(Z|[+-]\\d{2}:\\d{2})$/.test(body[field]) || !Number.isFinite(Date.parse(body[field]))) errors[field] = 'Data/hora com fuso obrigatório.';
+    }
+    if (body.status !== undefined && !APPOINTMENT_STATUSES.has(body.status)) errors.status = 'Status inválido.';
+    if (body.notes !== undefined && body.notes !== null && (typeof body.notes !== 'string' || body.notes.length > 4000)) errors.notes = 'Observação inválida.';
+    if (body.starts_at && body.ends_at && Date.parse(body.ends_at) <= Date.parse(body.starts_at)) errors.ends_at = 'Fim deve ser posterior ao início.';
+    return errors;
+  }
+  async function appointmentScope(req, res) {
+    const membership = await getMembership(req);
+    if (!membership) { res.status(403).json({ error: 'Usuário sem organização autorizada.' }); return null; }
+    return membership;
+  }
+  app.get('/appointments', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req,res); if (!membership) return;
+    let query = req.supabase.from('appointments').select(APPOINTMENT_FIELDS).eq('organization_id', membership.organization_id).order('starts_at', { ascending: true }).limit(250);
+    if (req.query.from) { if (!Number.isFinite(Date.parse(req.query.from))) return res.status(422).json({ error: 'Início inválido.' }); query = query.gte('starts_at',new Date(req.query.from).toISOString()); }
+    if (req.query.to) { if (!Number.isFinite(Date.parse(req.query.to))) return res.status(422).json({ error: 'Fim inválido.' }); query = query.lt('starts_at',new Date(req.query.to).toISOString()); }
+    if (req.query.status) { if (!APPOINTMENT_STATUSES.has(req.query.status)) return res.status(422).json({ error: 'Status inválido.' }); query = query.eq('status',req.query.status); }
+    const {data,error} = await query;
+    if (error) return res.status(400).json({error:'Não foi possível consultar a agenda.'});
+    return res.json({appointments:data??[]});
+  });
+  app.post('/appointments', rateLimit, requireAuth, async (req,res) => {
+    const membership = await appointmentScope(req,res); if (!membership) return;
+    const errors = validateAppointment(req.body);
+    if (Object.keys(errors).length) return res.status(422).json({error:'Dados inválidos.',fields:errors});
+    const professionalId = req.body.professional_id || req.user.id;
+    if (!(await verifyProfessionalMembership(req.supabase,membership.organization_id,professionalId))) return res.status(422).json({error:'Profissional não pertence à organização.'});
+    const {data:patient,error:patientError} = await req.supabase.from('patients').select('id').eq('id',req.body.patient_id).eq('organization_id',membership.organization_id).maybeSingle();
+    if (patientError || !patient) return res.status(422).json({error:'Paciente não encontrado nesta organização.'});
+    const payload = {organization_id:membership.organization_id,professional_id:professionalId,patient_id:req.body.patient_id,starts_at:new Date(req.body.starts_at).toISOString(),ends_at:new Date(req.body.ends_at).toISOString(),status:req.body.status||'scheduled',notes:req.body.notes??null};
+    const {data,error} = await req.supabase.from('appointments').insert(payload).select(APPOINTMENT_FIELDS).single();
+    if (error) return res.status(400).json({error:'Não foi possível criar o agendamento.'});
+    return res.status(201).json({appointment:data});
+  });
+  app.patch('/appointments/:id', rateLimit, requireAuth, async (req,res) => {
+    const membership = await appointmentScope(req,res); if (!membership) return;
+    if (!isUuid(req.params.id)) return res.status(400).json({error:'Agendamento inválido.'});
+    const errors = validateAppointment(req.body,true);
+    if (Object.keys(errors).length) return res.status(422).json({error:'Dados inválidos.',fields:errors});
+    const {data:existing,error:existingError} = await req.supabase.from('appointments').select(APPOINTMENT_FIELDS).eq('id',req.params.id).eq('organization_id',membership.organization_id).maybeSingle();
+    if (existingError || !existing) return res.status(404).json({error:'Agendamento não encontrado.'});
+    const patch = {};
+    for (const key of ['starts_at','ends_at','status','notes']) if (req.body[key] !== undefined) patch[key] = req.body[key];
+    if (patch.starts_at || patch.ends_at) {
+      const start = Date.parse(patch.starts_at || existing.starts_at), end = Date.parse(patch.ends_at || existing.ends_at);
+      if (!(end>start)) return res.status(422).json({error:'Intervalo inválido.'});
+    }
+    if (!Object.keys(patch).length) return res.status(422).json({error:'Nenhuma alteração permitida.'});
+    const {data,error} = await req.supabase.from('appointments').update({...patch,updated_at:new Date().toISOString()}).eq('id',req.params.id).eq('organization_id',membership.organization_id).select(APPOINTMENT_FIELDS).single();
+    if (error) return res.status(400).json({error:'Não foi possível atualizar o agendamento.'});
+    return res.json({appointment:data});
+  });
+  app.delete('/appointments/:id', rateLimit, requireAuth, async (req,res) => {
+    const membership = await appointmentScope(req,res); if (!membership) return;
+    if (!isUuid(req.params.id)) return res.status(400).json({error:'Agendamento inválido.'});
+    const {data,error} = await req.supabase.from('appointments').delete().eq('id',req.params.id).eq('organization_id',membership.organization_id).select('id').maybeSingle();
+    if (error) return res.status(400).json({error:'Não foi possível excluir o agendamento.'});
+    if (!data) return res.status(404).json({error:'Agendamento não encontrado.'});
+    return res.status(204).send();
+  });
+
   app.post('/chat', rateLimit, requireAuth, (req, res) => {
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     if (!message) return res.status(400).json({ error: 'A mensagem é obrigatória.' });
