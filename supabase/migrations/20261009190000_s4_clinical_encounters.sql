@@ -48,14 +48,43 @@ create table public.clinical_evolutions (
  check ((status='draft' and confirmed_at is null) or (status='confirmed' and confirmed_at is not null))
 );
 create index clinical_evolutions_encounter_idx on public.clinical_evolutions(organization_id,encounter_id,created_at desc);
-create or replace function public.s4_prevent_confirmed_evolution_edit() returns trigger language plpgsql set search_path = '' as $$
+create or replace function public.s4_prevent_confirmed_evolution_edit()
+returns trigger
+language plpgsql
+set search_path = ''
+as $s4$
+declare
+ encounter_status text;
 begin
+ if tg_op='DELETE' then
+  if old.status='confirmed' then raise exception 'Confirmed clinical evolution is immutable'; end if;
+  return old;
+ end if;
+ if tg_op='INSERT' then
+  if new.status <> 'draft' or new.confirmed_at is not null then
+   raise exception 'Clinical evolutions must be inserted as drafts';
+  end if;
+  select ce.status into encounter_status
+  from public.clinical_encounters ce
+  where ce.organization_id=new.organization_id and ce.id=new.encounter_id
+  for update;
+  if encounter_status is distinct from 'in_progress' then
+   raise exception 'Clinical evolutions require an in-progress encounter';
+  end if;
+  return new;
+ end if;
  if old.status='confirmed' then raise exception 'Confirmed clinical evolution is immutable'; end if;
- if new.status='confirmed' and new.confirmed_at is null then raise exception 'Confirmation timestamp required'; end if;
+ if new.status='confirmed' and new.content is distinct from old.content then
+  raise exception 'Review the draft before confirming it';
+ end if;
+ if new.status='confirmed' and new.confirmed_at is null then
+  raise exception 'Confirmation timestamp required';
+ end if;
  return new;
-end $$;
+end
+$s4$;
 revoke all on function public.s4_prevent_confirmed_evolution_edit() from public, anon, authenticated;
-create trigger s4_evolution_immutable before update or delete on public.clinical_evolutions
+create trigger s4_evolution_immutable before insert or update or delete on public.clinical_evolutions
  for each row execute function public.s4_prevent_confirmed_evolution_edit();
 create table public.clinical_exercises (
  id uuid primary key default gen_random_uuid(),
@@ -84,17 +113,167 @@ create table public.clinical_encounter_protocols (
 -- Add composite organization scoping for protocol references.
 alter table public.clinical_protocols add constraint clinical_protocols_org_id_unique unique (organization_id,id);
 alter table public.clinical_encounter_protocols add constraint clinical_encounter_protocols_org_fk foreign key (organization_id,protocol_id) references public.clinical_protocols(organization_id,id);
--- Never trust client-supplied organization identifiers; policies are defense in depth.
-do $$
-declare t text;
-begin
- foreach t in array array['clinical_encounters','clinical_evolutions','clinical_exercises','clinical_protocols','clinical_encounter_protocols'] loop
-  execute format('alter table public.%I enable row level security',t);
-  execute format('create policy s4_read on public.%I for select to authenticated using (private.is_org_member(organization_id))',t);
-  execute format('create policy s4_insert on public.%I for insert to authenticated with check (private.is_org_member(organization_id))',t);
-  execute format('create policy s4_update on public.%I for update to authenticated using (private.is_org_member(organization_id)) with check (private.is_org_member(organization_id))',t);
-  execute format('create policy s4_delete on public.%I for delete to authenticated using (private.is_org_member(organization_id))',t);
-  execute format('revoke all on public.%I from anon',t);
-  execute format('grant select,insert,update,delete on public.%I to authenticated',t);
- end loop;
-end $$;
+-- Organization membership establishes the outer boundary; clinical rows are then
+-- limited to the responsible professional or an organization administrator.
+alter table public.clinical_encounters enable row level security;
+create policy s4_encounters_select on public.clinical_encounters for select to authenticated
+using ((select private.is_org_member(organization_id))
+ and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())));
+create policy s4_encounters_insert on public.clinical_encounters for insert to authenticated
+with check ((select private.is_org_member(organization_id))
+ and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())));
+create policy s4_encounters_update on public.clinical_encounters for update to authenticated
+using ((select private.is_org_member(organization_id))
+ and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())))
+with check ((select private.is_org_member(organization_id))
+ and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())));
+create policy s4_encounters_delete on public.clinical_encounters for delete to authenticated
+using ((select private.is_org_member(organization_id))
+ and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())));
+revoke all on public.clinical_encounters from anon;
+grant select,insert,update,delete on public.clinical_encounters to authenticated;
+
+alter table public.clinical_evolutions enable row level security;
+create policy s4_evolutions_select on public.clinical_evolutions for select to authenticated
+using ((select private.is_org_member(organization_id))
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_evolutions.organization_id
+   and ce.id=clinical_evolutions.encounter_id
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ ));
+create policy s4_evolutions_insert on public.clinical_evolutions for insert to authenticated
+with check ((select private.is_org_member(organization_id))
+ and author_id=(select auth.uid())
+ and status='draft' and confirmed_at is null
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_evolutions.organization_id
+   and ce.id=clinical_evolutions.encounter_id
+   and ce.status='in_progress'
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ ));
+create policy s4_evolutions_update on public.clinical_evolutions for update to authenticated
+using ((select private.is_org_member(organization_id))
+ and author_id=(select auth.uid())
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_evolutions.organization_id
+   and ce.id=clinical_evolutions.encounter_id
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ ))
+with check ((select private.is_org_member(organization_id))
+ and author_id=(select auth.uid())
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_evolutions.organization_id
+   and ce.id=clinical_evolutions.encounter_id
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ ));
+create policy s4_evolutions_delete on public.clinical_evolutions for delete to authenticated
+using ((select private.is_org_member(organization_id))
+ and author_id=(select auth.uid())
+ and status='draft'
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_evolutions.organization_id
+   and ce.id=clinical_evolutions.encounter_id
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ ));
+revoke all on public.clinical_evolutions from anon;
+grant select,insert,update,delete on public.clinical_evolutions to authenticated;
+
+alter table public.clinical_exercises enable row level security;
+create policy s4_exercises_select on public.clinical_exercises for select to authenticated
+using ((select private.is_org_member(organization_id))
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_exercises.organization_id
+   and ce.id=clinical_exercises.encounter_id
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ ));
+create policy s4_exercises_insert on public.clinical_exercises for insert to authenticated
+with check ((select private.is_org_member(organization_id))
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_exercises.organization_id
+   and ce.id=clinical_exercises.encounter_id
+   and ce.status='in_progress'
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ ));
+create policy s4_exercises_update on public.clinical_exercises for update to authenticated
+using ((select private.is_org_member(organization_id))
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_exercises.organization_id
+   and ce.id=clinical_exercises.encounter_id
+   and ce.status='in_progress'
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ ))
+with check ((select private.is_org_member(organization_id))
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_exercises.organization_id
+   and ce.id=clinical_exercises.encounter_id
+   and ce.status='in_progress'
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ ));
+create policy s4_exercises_delete on public.clinical_exercises for delete to authenticated
+using ((select private.is_org_member(organization_id))
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_exercises.organization_id
+   and ce.id=clinical_exercises.encounter_id
+   and ce.status='in_progress'
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ ));
+revoke all on public.clinical_exercises from anon;
+grant select,insert,update,delete on public.clinical_exercises to authenticated;
+
+alter table public.clinical_protocols enable row level security;
+create policy s4_protocols_select on public.clinical_protocols for select to authenticated
+using ((select private.is_org_member(organization_id)));
+create policy s4_protocols_insert on public.clinical_protocols for insert to authenticated
+with check ((select private.is_org_member(organization_id)) and (select private.is_org_admin(organization_id)));
+create policy s4_protocols_update on public.clinical_protocols for update to authenticated
+using ((select private.is_org_member(organization_id)) and (select private.is_org_admin(organization_id)))
+with check ((select private.is_org_member(organization_id)) and (select private.is_org_admin(organization_id)));
+create policy s4_protocols_delete on public.clinical_protocols for delete to authenticated
+using ((select private.is_org_member(organization_id)) and (select private.is_org_admin(organization_id)));
+revoke all on public.clinical_protocols from anon;
+grant select,insert,update,delete on public.clinical_protocols to authenticated;
+
+alter table public.clinical_encounter_protocols enable row level security;
+create policy s4_encounter_protocols_select on public.clinical_encounter_protocols for select to authenticated
+using ((select private.is_org_member(organization_id))
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_encounter_protocols.organization_id
+   and ce.id=clinical_encounter_protocols.encounter_id
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ ));
+create policy s4_encounter_protocols_insert on public.clinical_encounter_protocols for insert to authenticated
+with check ((select private.is_org_member(organization_id))
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_encounter_protocols.organization_id
+   and ce.id=clinical_encounter_protocols.encounter_id
+   and ce.status='in_progress'
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ )
+ and exists (
+  select 1 from public.clinical_protocols cp
+  where cp.organization_id=clinical_encounter_protocols.organization_id
+   and cp.id=clinical_encounter_protocols.protocol_id
+ ));
+create policy s4_encounter_protocols_delete on public.clinical_encounter_protocols for delete to authenticated
+using ((select private.is_org_member(organization_id))
+ and exists (
+  select 1 from public.clinical_encounters ce
+  where ce.organization_id=clinical_encounter_protocols.organization_id
+   and ce.id=clinical_encounter_protocols.encounter_id
+   and ce.status='in_progress'
+   and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
+ ));
+revoke all on public.clinical_encounter_protocols from anon;
+grant select,insert,delete on public.clinical_encounter_protocols to authenticated;
