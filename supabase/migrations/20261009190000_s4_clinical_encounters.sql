@@ -15,6 +15,10 @@ create table public.clinical_encounters (
  foreign key (organization_id,professional_id) references public.organization_members(organization_id,user_id) on delete restrict,
  check ((status='in_progress' and completed_at is null) or (status='completed' and completed_at is not null))
 );
+-- Appointment must belong to the same organization and patient/professional.
+alter table public.appointments add constraint appointments_s4_org_id_unique unique (organization_id,id);
+alter table public.clinical_encounters add constraint clinical_encounters_appointment_org_fk
+ foreign key (organization_id,appointment_id) references public.appointments(organization_id,id) on delete restrict;
 create unique index clinical_encounters_org_appointment_unique on public.clinical_encounters(organization_id,appointment_id) where appointment_id is not null;
 create index clinical_encounters_patient_history_idx on public.clinical_encounters(organization_id,patient_id,started_at desc);
 create table public.clinical_evolutions (
@@ -38,6 +42,7 @@ begin
  if new.status='confirmed' and new.confirmed_at is null then raise exception 'Confirmation timestamp required'; end if;
  return new;
 end $$;
+revoke all on function public.s4_prevent_confirmed_evolution_edit() from public, anon, authenticated;
 create trigger s4_evolution_immutable before update or delete on public.clinical_evolutions
  for each row execute function public.s4_prevent_confirmed_evolution_edit();
 create table public.clinical_exercises (
