@@ -366,7 +366,7 @@ export default function ClinicalPanel({
           : detailLoading ? <div className="panel" role="status">Carregando prontuário…</div>
           : selectedEncounter ? <div className="panel">
             <div className="clinical-section-heading"><div><span className="eyebrow">ATENDIMENTO</span><h3>{patientName}</h3><p>{new Date(selectedEncounter.started_at).toLocaleString('pt-BR')} · {selectedEncounter.status === 'in_progress' ? 'Em andamento' : 'Finalizado'}</p></div>
-              {selectedEncounter.status === 'in_progress' && <button type="button" className="clinical-secondary" onClick={() => void completeEncounter()} disabled={saving || drafts.length > 0} title={drafts.length ? 'Confirme ou exclua os rascunhos antes de finalizar.' : undefined}>{saving ? 'Salvando…' : 'Finalizar atendimento'}</button>}
+              {selectedEncounter.status === 'in_progress' && <button type="button" className="clinical-secondary" onClick={() => void completeEncounter()} disabled={saving || drafts.length > 0} title={drafts.length ? 'Confirme os rascunhos antes de finalizar.' : undefined}>{saving ? 'Salvando…' : 'Finalizar atendimento'}</button>}
             </div>
 
             <section className="clinical-section" aria-labelledby="evolution-heading">
