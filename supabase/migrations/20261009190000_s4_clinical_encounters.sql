@@ -74,11 +74,21 @@ begin
   return new;
  end if;
  if old.status='confirmed' then raise exception 'Confirmed clinical evolution is immutable'; end if;
- if new.status='confirmed' and new.content is distinct from old.content then
-  raise exception 'Review the draft before confirming it';
+ select ce.status into encounter_status
+ from public.clinical_encounters ce
+ where ce.organization_id=new.organization_id and ce.id=new.encounter_id
+ for update;
+ if encounter_status is distinct from 'in_progress' then
+  raise exception 'Clinical evolutions require an in-progress encounter';
  end if;
- if new.status='confirmed' and new.confirmed_at is null then
-  raise exception 'Confirmation timestamp required';
+ if new.status='confirmed' then
+  if new.content is distinct from old.content then
+   raise exception 'Review the draft before confirming it';
+  end if;
+  -- A caller-supplied timestamp is never authoritative.
+  new.confirmed_at := statement_timestamp();
+ elsif new.confirmed_at is not null then
+  raise exception 'Draft confirmation timestamp must be null';
  end if;
  return new;
 end
@@ -190,6 +200,7 @@ using ((select private.is_org_member(organization_id))
   select 1 from public.clinical_encounters ce
   where ce.organization_id=clinical_evolutions.organization_id
    and ce.id=clinical_evolutions.encounter_id
+   and ce.status='in_progress'
    and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
  ))
 with check ((select private.is_org_member(organization_id))
@@ -198,6 +209,7 @@ with check ((select private.is_org_member(organization_id))
   select 1 from public.clinical_encounters ce
   where ce.organization_id=clinical_evolutions.organization_id
    and ce.id=clinical_evolutions.encounter_id
+   and ce.status='in_progress'
    and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
  ));
 create policy s4_evolutions_delete on public.clinical_evolutions for delete to authenticated
@@ -208,6 +220,7 @@ using ((select private.is_org_member(organization_id))
   select 1 from public.clinical_encounters ce
   where ce.organization_id=clinical_evolutions.organization_id
    and ce.id=clinical_evolutions.encounter_id
+   and ce.status='in_progress'
    and ((select private.is_org_admin(ce.organization_id)) or ce.professional_id=(select auth.uid()))
  ));
 revoke all on public.clinical_evolutions from anon;
