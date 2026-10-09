@@ -6,7 +6,7 @@ process.env.NEXT_PUBLIC_SUPABASE_URL='http://test.local';
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY='test-anon-key';
 const {createApp}=await import('../src/index.js');
 
-function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[]}={}){
+function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],operationErrors={}}={}){
   const memberRows=memberships??[membership];
   const rowsByTable={
     organization_members:memberRows,
@@ -17,7 +17,7 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
     clinical_protocols:protocols,
     clinical_encounter_protocols:encounterProtocols,
   };
-  const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value])=>row[key]===value));
+  const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):row[key]===value));
   return {
     auth:{getUser:async token=>token==='valid'?{data:{user},error:null}:{data:{user:null},error:new Error('invalid token')}},
     from(table){
@@ -26,8 +26,8 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
       const matching=()=>matchingRows(tableRows,state.filters);
       const api={
         select(){return api},
-        eq(k,v){state.filters.push([k,v]);return api},
-        in(k,values){state.filters.push([k,values]);return api},
+        eq(k,v){state.filters.push([k,v,'eq']);return api},
+        in(k,values){state.filters.push([k,values,'in']);return api},
         ilike(){return api},
         order(){return api},
         limit(n){state.limit=n;return api},
@@ -40,8 +40,13 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
         insert(v){state.operation='insert';state.values=v;return api},
         update(v){state.operation='update';state.values=v;return api},
         delete(){state.operation='delete';return api},
-        single:async()=>({data:state.values,error:null}),
+        single:async()=>{
+          if(state.operation==='insert'){const row={...state.values};tableRows.push(row);return {data:row,error:null};}
+          return {data:state.values,error:null};
+        },
         then(resolve){
+          const operationError=operationErrors[state.table]?.[state.operation];
+          if(operationError)return Promise.resolve({data:null,error:operationError}).then(resolve);
           let data=matching();
           if(state.operation==='update')for(const row of data)Object.assign(row,state.values);
           if(state.operation==='delete'){for(const row of data)tableRows.splice(tableRows.indexOf(row),1);data=[]}
