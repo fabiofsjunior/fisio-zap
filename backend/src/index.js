@@ -49,9 +49,38 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
   }
 
   async function getMembership(req) {
-    const { data, error } = await req.supabase.from('organization_members').select('organization_id, role').eq('user_id', req.user.id).order('created_at', { ascending: true }).limit(1).maybeSingle();
-    if (error || !data) return null;
-    return data;
+    const requestedOrganizationId = req.get('x-fisiozap-organization-id');
+    const membershipQuery = req.supabase.from('organization_members')
+      .select('organization_id, role').eq('user_id', req.user.id);
+    if (requestedOrganizationId) {
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestedOrganizationId)) {
+        req.invalidOrganizationSelection = true;
+        return null;
+      }
+      const { data, error } = await membershipQuery.eq('organization_id', requestedOrganizationId).maybeSingle();
+      if (error || !data) {
+        req.invalidOrganizationSelection = true;
+        return null;
+      }
+      return data;
+    }
+    const { data, error } = await membershipQuery.limit(2);
+    if (error || !data?.length) return null;
+    if (data.length > 1) {
+      req.organizationSelectionRequired = true;
+      return null;
+    }
+    return data[0];
+  }
+
+  function rejectMembership(req, res) {
+    if (req.organizationSelectionRequired) {
+      return res.status(409).json({ error: 'Usuário vinculado a várias organizações. Envie X-FisioZap-Organization-Id com uma organização da sua membership.' });
+    }
+    if (req.invalidOrganizationSelection) {
+      return res.status(403).json({ error: 'Organização solicitada não autorizada.' });
+    }
+    return res.status(403).json({ error: 'Usuário sem organização autorizada.' });
   }
 
   function validatePatient(input, { partial = false } = {}) {
@@ -90,7 +119,7 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
 
   app.get('/patients', rateLimit, requireAuth, async (req, res) => {
     const membership = await getMembership(req);
-    if (!membership) return res.status(403).json({ error: 'Usuário sem organização autorizada.' });
+    if (!membership) return rejectMembership(req, res);
     let query = req.supabase.from('patients').select(PATIENT_FIELDS.join(',')).order('full_name', { ascending: true });
     if (typeof req.query.search === 'string' && req.query.search.trim()) query = query.ilike('full_name', '%' + req.query.search.trim().slice(0,80) + '%');
     if (typeof req.query.status === 'string' && PATIENT_STATUSES.has(req.query.status)) query = query.eq('status', req.query.status);
@@ -101,7 +130,7 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
 
   app.post('/patients', rateLimit, requireAuth, async (req, res) => {
     const membership = await getMembership(req);
-    if (!membership) return res.status(403).json({ error: 'Usuário sem organização autorizada.' });
+    if (!membership) return rejectMembership(req, res);
     const errors = validatePatient(req.body);
     if (Object.keys(errors).length) return res.status(422).json({ error: 'Dados inválidos.', fields: errors });
     const professionalId = req.body?.professional_id || req.user.id;
@@ -114,7 +143,7 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
 
   app.patch('/patients/:id', rateLimit, requireAuth, async (req, res) => {
     const membership = await getMembership(req);
-    if (!membership) return res.status(403).json({ error: 'Usuário sem organização autorizada.' });
+    if (!membership) return rejectMembership(req, res);
     if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) return res.status(400).json({ error: 'Paciente inválido.' });
     const errors = validatePatient(req.body, { partial: true });
     if (Object.keys(errors).length) return res.status(422).json({ error: 'Dados inválidos.', fields: errors });
@@ -129,7 +158,7 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
 
   app.delete('/patients/:id', rateLimit, requireAuth, async (req, res) => {
     const membership = await getMembership(req);
-    if (!membership) return res.status(403).json({ error: 'Usuário sem organização autorizada.' });
+    if (!membership) return rejectMembership(req, res);
     if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) return res.status(400).json({ error: 'Paciente inválido.' });
     const { data, error } = await req.supabase.from('patients').delete().eq('id', req.params.id).select('id').maybeSingle();
     if (error) return res.status(400).json({ error: 'Não foi possível excluir o paciente.' });
@@ -155,7 +184,7 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
   }
   async function appointmentScope(req, res) {
     const membership = await getMembership(req);
-    if (!membership) { res.status(403).json({ error: 'Usuário sem organização autorizada.' }); return null; }
+    if (!membership) { rejectMembership(req, res); return null; }
     return membership;
   }
   app.get('/appointments', rateLimit, requireAuth, async (req, res) => {
@@ -308,6 +337,225 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     if(error)return res.status(400).json({error:'Não foi possível confirmar a evolução.'});
     if(!data)return res.status(409).json({error:'Evolução alterada simultaneamente.'});
     return res.json({evolution:data});
+  });
+
+  // S4.2: exercises and protocols are scoped to the authenticated organization.
+  const EXERCISE_FIELDS = 'id,organization_id,encounter_id,title,instructions,created_at';
+  const PROTOCOL_FIELDS = 'id,organization_id,title,description,created_at';
+  const ENCOUNTER_PROTOCOL_FIELDS = 'organization_id,encounter_id,protocol_id';
+
+  function validateExercise(body, partial = false) {
+    const errors = {};
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return { body: 'Objeto obrigatório.' };
+    if (!partial || body.title !== undefined) {
+      if (typeof body.title !== 'string' || body.title.trim().length < 1) errors.title = 'Título obrigatório.';
+      else if (body.title.trim().length > 200) errors.title = 'Título deve ter no máximo 200 caracteres.';
+    }
+    if (body.instructions !== undefined && body.instructions !== null
+      && (typeof body.instructions !== 'string' || body.instructions.length > 4000)) {
+      errors.instructions = 'Instruções inválidas ou excedem 4000 caracteres.';
+    }
+    return errors;
+  }
+
+  function validateProtocol(body, partial = false) {
+    const errors = {};
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return { body: 'Objeto obrigatório.' };
+    if (!partial || body.title !== undefined) {
+      if (typeof body.title !== 'string' || body.title.trim().length < 1) errors.title = 'Título obrigatório.';
+      else if (body.title.trim().length > 200) errors.title = 'Título deve ter no máximo 200 caracteres.';
+    }
+    if (body.description !== undefined && body.description !== null
+      && (typeof body.description !== 'string' || body.description.length > 4000)) {
+      errors.description = 'Descrição inválida ou excede 4000 caracteres.';
+    }
+    return errors;
+  }
+
+  function canManageProtocols(membership) {
+    return membership.role === 'owner' || membership.role === 'coordinator';
+  }
+
+  async function getOwnedInProgressEncounter(req, res, membership, id) {
+    const encounter = await getScopedEncounter(req, membership, id);
+    if (!encounter) {
+      res.status(404).json({ error: 'Atendimento não encontrado.' });
+      return null;
+    }
+    if (encounter.professional_id !== req.user.id) {
+      res.status(403).json({ error: 'Profissional não autorizado.' });
+      return null;
+    }
+    if (encounter.status !== 'in_progress') {
+      res.status(409).json({ error: 'Atendimento finalizado.' });
+      return null;
+    }
+    return encounter;
+  }
+
+  app.get('/encounters/:id/exercises', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    const encounter = await getScopedEncounter(req, membership, req.params.id);
+    if (!encounter) return res.status(404).json({ error: 'Atendimento não encontrado.' });
+    const { data, error } = await req.supabase.from('clinical_exercises').select(EXERCISE_FIELDS)
+      .eq('organization_id', membership.organization_id).eq('encounter_id', encounter.id)
+      .order('created_at', { ascending: true }).limit(100);
+    if (error) return res.status(400).json({ error: 'Não foi possível consultar os exercícios.' });
+    return res.json({ exercises: data ?? [] });
+  });
+
+  app.post('/encounters/:id/exercises', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    const errors = validateExercise(req.body);
+    if (Object.keys(errors).length) return res.status(422).json({ error: 'Dados inválidos.', fields: errors });
+    const encounter = await getOwnedInProgressEncounter(req, res, membership, req.params.id);
+    if (!encounter) return;
+    const { data, error } = await req.supabase.from('clinical_exercises').insert({
+      organization_id: membership.organization_id,
+      encounter_id: encounter.id,
+      title: req.body.title.trim(),
+      instructions: typeof req.body.instructions === 'string' ? req.body.instructions.trim() || null : null,
+    }).select(EXERCISE_FIELDS).single();
+    if (error) return res.status(400).json({ error: 'Não foi possível registrar o exercício.' });
+    return res.status(201).json({ exercise: data });
+  });
+
+  app.patch('/exercises/:id', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    if (!isUuid(req.params.id)) return res.status(400).json({ error: 'Exercício inválido.' });
+    const keys = Object.keys(req.body ?? {});
+    if (!keys.length || keys.some(key => !['title', 'instructions'].includes(key))) {
+      return res.status(422).json({ error: 'Informe somente título e/ou instruções.' });
+    }
+    const errors = validateExercise(req.body, true);
+    if (Object.keys(errors).length) return res.status(422).json({ error: 'Dados inválidos.', fields: errors });
+    const { data: existing, error: lookupError } = await req.supabase.from('clinical_exercises').select(EXERCISE_FIELDS)
+      .eq('id', req.params.id).eq('organization_id', membership.organization_id).maybeSingle();
+    if (lookupError || !existing) return res.status(404).json({ error: 'Exercício não encontrado.' });
+    const encounter = await getOwnedInProgressEncounter(req, res, membership, existing.encounter_id);
+    if (!encounter) return;
+    const patch = {};
+    if (req.body.title !== undefined) patch.title = req.body.title.trim();
+    if (req.body.instructions !== undefined) patch.instructions = typeof req.body.instructions === 'string' ? req.body.instructions.trim() || null : null;
+    const { data, error } = await req.supabase.from('clinical_exercises').update(patch)
+      .eq('id', existing.id).eq('organization_id', membership.organization_id).select(EXERCISE_FIELDS).maybeSingle();
+    if (error) return res.status(400).json({ error: 'Não foi possível atualizar o exercício.' });
+    if (!data) return res.status(409).json({ error: 'Exercício alterado simultaneamente.' });
+    return res.json({ exercise: data });
+  });
+
+  app.delete('/exercises/:id', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    if (!isUuid(req.params.id)) return res.status(400).json({ error: 'Exercício inválido.' });
+    const { data: existing, error: lookupError } = await req.supabase.from('clinical_exercises').select(EXERCISE_FIELDS)
+      .eq('id', req.params.id).eq('organization_id', membership.organization_id).maybeSingle();
+    if (lookupError || !existing) return res.status(404).json({ error: 'Exercício não encontrado.' });
+    const encounter = await getOwnedInProgressEncounter(req, res, membership, existing.encounter_id);
+    if (!encounter) return;
+    const { data, error } = await req.supabase.from('clinical_exercises').delete()
+      .eq('id', existing.id).eq('organization_id', membership.organization_id).select('id').maybeSingle();
+    if (error) return res.status(400).json({ error: 'Não foi possível excluir o exercício.' });
+    if (!data) return res.status(404).json({ error: 'Exercício não encontrado.' });
+    return res.status(204).send();
+  });
+
+  app.get('/protocols', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    const { data, error } = await req.supabase.from('clinical_protocols').select(PROTOCOL_FIELDS)
+      .eq('organization_id', membership.organization_id).order('title', { ascending: true }).limit(200);
+    if (error) return res.status(400).json({ error: 'Não foi possível consultar os protocolos.' });
+    return res.json({ protocols: data ?? [] });
+  });
+
+  app.post('/protocols', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    if (!canManageProtocols(membership)) return res.status(403).json({ error: 'Somente owner ou coordenador pode gerenciar protocolos.' });
+    const errors = validateProtocol(req.body);
+    if (Object.keys(errors).length) return res.status(422).json({ error: 'Dados inválidos.', fields: errors });
+    const { data, error } = await req.supabase.from('clinical_protocols').insert({
+      organization_id: membership.organization_id,
+      title: req.body.title.trim(),
+      description: typeof req.body.description === 'string' ? req.body.description.trim() || null : null,
+    }).select(PROTOCOL_FIELDS).single();
+    if (error) return res.status(400).json({ error: 'Não foi possível criar o protocolo.' });
+    return res.status(201).json({ protocol: data });
+  });
+
+  app.patch('/protocols/:id', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    if (!canManageProtocols(membership)) return res.status(403).json({ error: 'Somente owner ou coordenador pode gerenciar protocolos.' });
+    if (!isUuid(req.params.id)) return res.status(400).json({ error: 'Protocolo inválido.' });
+    const keys = Object.keys(req.body ?? {});
+    if (!keys.length || keys.some(key => !['title', 'description'].includes(key))) {
+      return res.status(422).json({ error: 'Informe somente título e/ou descrição.' });
+    }
+    const errors = validateProtocol(req.body, true);
+    if (Object.keys(errors).length) return res.status(422).json({ error: 'Dados inválidos.', fields: errors });
+    const patch = {};
+    if (req.body.title !== undefined) patch.title = req.body.title.trim();
+    if (req.body.description !== undefined) patch.description = typeof req.body.description === 'string' ? req.body.description.trim() || null : null;
+    const { data, error } = await req.supabase.from('clinical_protocols').update(patch)
+      .eq('id', req.params.id).eq('organization_id', membership.organization_id).select(PROTOCOL_FIELDS).maybeSingle();
+    if (error) return res.status(400).json({ error: 'Não foi possível atualizar o protocolo.' });
+    if (!data) return res.status(404).json({ error: 'Protocolo não encontrado.' });
+    return res.json({ protocol: data });
+  });
+
+  app.delete('/protocols/:id', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    if (!canManageProtocols(membership)) return res.status(403).json({ error: 'Somente owner ou coordenador pode gerenciar protocolos.' });
+    if (!isUuid(req.params.id)) return res.status(400).json({ error: 'Protocolo inválido.' });
+    const { data, error } = await req.supabase.from('clinical_protocols').delete()
+      .eq('id', req.params.id).eq('organization_id', membership.organization_id).select('id').maybeSingle();
+    if (error?.code === '23503') return res.status(409).json({ error: 'Protocolo associado a atendimentos.' });
+    if (error) return res.status(400).json({ error: 'Não foi possível excluir o protocolo.' });
+    if (!data) return res.status(404).json({ error: 'Protocolo não encontrado.' });
+    return res.status(204).send();
+  });
+
+  app.get('/encounters/:id/protocols', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    const encounter = await getScopedEncounter(req, membership, req.params.id);
+    if (!encounter) return res.status(404).json({ error: 'Atendimento não encontrado.' });
+    const { data: links, error: linkError } = await req.supabase.from('clinical_encounter_protocols')
+      .select(ENCOUNTER_PROTOCOL_FIELDS).eq('organization_id', membership.organization_id).eq('encounter_id', encounter.id);
+    if (linkError) return res.status(400).json({ error: 'Não foi possível consultar os protocolos do atendimento.' });
+    const protocolIds = (links ?? []).map(link => link.protocol_id);
+    if (!protocolIds.length) return res.json({ protocols: [] });
+    const { data, error } = await req.supabase.from('clinical_protocols').select(PROTOCOL_FIELDS)
+      .eq('organization_id', membership.organization_id).in('id', protocolIds).order('title', { ascending: true });
+    if (error) return res.status(400).json({ error: 'Não foi possível consultar os protocolos do atendimento.' });
+    return res.json({ protocols: data ?? [] });
+  });
+
+  app.post('/encounters/:id/protocols', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    const protocolId = req.body?.protocol_id;
+    if (!isUuid(protocolId)) return res.status(422).json({ error: 'Protocolo inválido.' });
+    const encounter = await getOwnedInProgressEncounter(req, res, membership, req.params.id);
+    if (!encounter) return;
+    const { data: protocol, error: protocolError } = await req.supabase.from('clinical_protocols').select(PROTOCOL_FIELDS)
+      .eq('id', protocolId).eq('organization_id', membership.organization_id).maybeSingle();
+    if (protocolError || !protocol) return res.status(404).json({ error: 'Protocolo não encontrado.' });
+    const { data, error } = await req.supabase.from('clinical_encounter_protocols').insert({
+      organization_id: membership.organization_id, encounter_id: encounter.id, protocol_id: protocol.id,
+    }).select(ENCOUNTER_PROTOCOL_FIELDS).single();
+    if (error?.code === '23505') return res.status(409).json({ error: 'Protocolo já associado ao atendimento.' });
+    if (error) return res.status(400).json({ error: 'Não foi possível associar o protocolo.' });
+    return res.status(201).json({ association: data });
+  });
+
+  app.delete('/encounters/:id/protocols/:protocolId', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    if (!isUuid(req.params.protocolId)) return res.status(400).json({ error: 'Protocolo inválido.' });
+    const encounter = await getOwnedInProgressEncounter(req, res, membership, req.params.id);
+    if (!encounter) return;
+    const { data, error } = await req.supabase.from('clinical_encounter_protocols').delete()
+      .eq('organization_id', membership.organization_id).eq('encounter_id', encounter.id)
+      .eq('protocol_id', req.params.protocolId).select('protocol_id').maybeSingle();
+    if (error) return res.status(400).json({ error: 'Não foi possível remover o protocolo do atendimento.' });
+    if (!data) return res.status(404).json({ error: 'Vínculo de protocolo não encontrado.' });
+    return res.status(204).send();
   });
 
   app.post('/chat', rateLimit, requireAuth, (req, res) => {
