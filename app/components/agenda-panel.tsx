@@ -4,8 +4,8 @@ import { useEffect, useState } from 'react';
 import { createBrowserClient } from '@supabase/ssr';
 import ClinicalPanel from '@/app/components/clinical-panel';
 
-type Appointment = { id: string; patient_id: string; starts_at: string; ends_at: string; status: string };
-type Patient = { id: string; full_name: string };
+type Appointment = { id: string; patient_id: string; professional_id: string; starts_at: string; ends_at: string; status: string };
+type Patient = { id: string; full_name: string; professional_id: string };
 const statuses = ['scheduled', 'confirmed', 'completed', 'cancelled', 'no_show', 'rescheduled'];
 
 async function callApi(organizationId: string, path: string, options: RequestInit = {}) {
@@ -21,7 +21,7 @@ async function callApi(organizationId: string, path: string, options: RequestIni
   return data;
 }
 
-export default function AgendaPanel({ organizationId }: { organizationId: string }) {
+export default function AgendaPanel({ organizationId, userId }: { organizationId: string; userId: string }) {
   const [day, setDay] = useState(() => new Date().toLocaleDateString('en-CA'));
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -30,7 +30,7 @@ export default function AgendaPanel({ organizationId }: { organizationId: string
   const [end, setEnd] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [clinicalContext, setClinicalContext] = useState<{ patientId: string; patientName: string; appointmentId?: string } | null>(null);
+  const [clinicalContext, setClinicalContext] = useState<{ patientId: string; patientName: string; appointmentId?: string; canStartAppointment: boolean } | null>(null);
 
   async function refresh() {
     setLoading(true);
@@ -80,6 +80,8 @@ export default function AgendaPanel({ organizationId }: { organizationId: string
   if (clinicalContext) return <ClinicalPanel
     key={clinicalContext.appointmentId || clinicalContext.patientId}
     organizationId={organizationId}
+    userId={userId}
+    canStartAppointment={clinicalContext.canStartAppointment}
     patientId={clinicalContext.patientId}
     patientName={clinicalContext.patientName}
     appointmentId={clinicalContext.appointmentId}
@@ -103,7 +105,7 @@ export default function AgendaPanel({ organizationId }: { organizationId: string
           <button type="button" className="clinical-secondary" onClick={() => {
             const patient = patients.find(p => p.id === item.patient_id);
             if (!patient) { setError('Não foi possível identificar o paciente deste agendamento.'); return; }
-            setClinicalContext({ patientId: patient.id, patientName: patient.full_name, appointmentId: item.id });
+            setClinicalContext({ patientId: patient.id, patientName: patient.full_name, appointmentId: item.id, canStartAppointment: item.professional_id === userId });
           }}>Abrir atendimento e histórico</button>
         </li>)}</ul>}
     </div>
