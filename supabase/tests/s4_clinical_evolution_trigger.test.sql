@@ -1,9 +1,31 @@
 begin;
-select plan(15);
+select plan(19);
 select is(
   (select count(*)::integer from pg_constraint where conrelid = 'public.patients'::regclass and conname = 'patients_s4_org_id_unique'),
   1,
   'patients has the organization-scoped key required by clinical encounters'
+);
+
+select ok(
+  (select created_at < '2999-01-01'::timestamptz from public.clinical_exercises where id='f6000000-0000-4000-8000-000000000001'),
+  'exercise creation timestamp is assigned by the server'
+);
+
+select throws_ok(
+  $update public.clinical_exercises set created_at='2999-01-01' where id='f6000000-0000-4000-8000-000000000001'$,
+  'P0001', 'Clinical record creation timestamp is immutable',
+  'exercise creation timestamp cannot be changed'
+);
+
+select ok(
+  (select created_at < '2999-01-01'::timestamptz from public.clinical_protocols where id='f7000000-0000-4000-8000-000000000001'),
+  'protocol creation timestamp is assigned by the server'
+);
+
+select throws_ok(
+  $update public.clinical_protocols set created_at='2999-01-01' where id='f7000000-0000-4000-8000-000000000001'$,
+  'P0001', 'Clinical record creation timestamp is immutable',
+  'protocol creation timestamp cannot be changed'
 );
 
 
@@ -46,6 +68,12 @@ insert into public.clinical_evolutions (id, organization_id, encounter_id, autho
 values
   ('f4000000-0000-4000-8000-000000000001', 'f1000000-0000-4000-8000-000000000001', 'f3000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002', 'Rascunho para testar confirmação', '2999-01-01', '2999-01-01'),
   ('f4000000-0000-4000-8000-000000000002', 'f1000000-0000-4000-8000-000000000001', 'f3000000-0000-4000-8000-000000000002', 'f0000000-0000-4000-8000-000000000002', 'Rascunho para testar encerramento', '2999-01-01', '2999-01-01');
+
+insert into public.clinical_exercises (id, organization_id, encounter_id, title, created_at)
+values ('f6000000-0000-4000-8000-000000000001', 'f1000000-0000-4000-8000-000000000001', 'f3000000-0000-4000-8000-000000000001', 'Exercício sintético', '2999-01-01');
+
+insert into public.clinical_protocols (id, organization_id, title, created_at)
+values ('f7000000-0000-4000-8000-000000000001', 'f1000000-0000-4000-8000-000000000001', 'Protocolo sintético', '2999-01-01');
 
 select ok(
   (select abs(extract(epoch from (started_at - statement_timestamp()))) < 5
