@@ -1,4 +1,7 @@
 -- S4.1: clinical encounter records. Synthetic data only during QA.
+-- The encounter FK is organization-scoped, so patients needs this candidate key.
+alter table public.patients add constraint patients_s4_org_id_unique unique (organization_id,id);
+
 create table public.clinical_encounters (
  id uuid primary key default gen_random_uuid(),
  organization_id uuid not null references public.organizations(id) on delete cascade,
