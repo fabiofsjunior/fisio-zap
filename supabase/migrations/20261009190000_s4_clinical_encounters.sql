@@ -118,18 +118,48 @@ alter table public.clinical_encounter_protocols add constraint clinical_encounte
 alter table public.clinical_encounters enable row level security;
 create policy s4_encounters_select on public.clinical_encounters for select to authenticated
 using ((select private.is_org_member(organization_id))
- and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())));
+ and ((select private.is_org_admin(organization_id))
+  or (professional_id=(select auth.uid()) and exists (
+   select 1 from public.patients p
+   where p.organization_id=clinical_encounters.organization_id
+    and p.id=clinical_encounters.patient_id
+    and p.professional_id=(select auth.uid())
+  ))));
 create policy s4_encounters_insert on public.clinical_encounters for insert to authenticated
 with check ((select private.is_org_member(organization_id))
- and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())));
+ and ((select private.is_org_admin(organization_id))
+  or (professional_id=(select auth.uid()) and exists (
+   select 1 from public.patients p
+   where p.organization_id=clinical_encounters.organization_id
+    and p.id=clinical_encounters.patient_id
+    and p.professional_id=(select auth.uid())
+  ))));
 create policy s4_encounters_update on public.clinical_encounters for update to authenticated
 using ((select private.is_org_member(organization_id))
- and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())))
+ and ((select private.is_org_admin(organization_id))
+  or (professional_id=(select auth.uid()) and exists (
+   select 1 from public.patients p
+   where p.organization_id=clinical_encounters.organization_id
+    and p.id=clinical_encounters.patient_id
+    and p.professional_id=(select auth.uid())
+  ))))
 with check ((select private.is_org_member(organization_id))
- and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())));
+ and ((select private.is_org_admin(organization_id))
+  or (professional_id=(select auth.uid()) and exists (
+   select 1 from public.patients p
+   where p.organization_id=clinical_encounters.organization_id
+    and p.id=clinical_encounters.patient_id
+    and p.professional_id=(select auth.uid())
+  ))));
 create policy s4_encounters_delete on public.clinical_encounters for delete to authenticated
 using ((select private.is_org_member(organization_id))
- and ((select private.is_org_admin(organization_id)) or professional_id=(select auth.uid())));
+ and ((select private.is_org_admin(organization_id))
+  or (professional_id=(select auth.uid()) and exists (
+   select 1 from public.patients p
+   where p.organization_id=clinical_encounters.organization_id
+    and p.id=clinical_encounters.patient_id
+    and p.professional_id=(select auth.uid())
+  ))));
 revoke all on public.clinical_encounters from anon;
 grant select,insert,update,delete on public.clinical_encounters to authenticated;
 
