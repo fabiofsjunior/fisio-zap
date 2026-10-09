@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createBrowserClient } from '@supabase/ssr';
 import ClinicalPanel from '@/app/components/clinical-panel';
 
@@ -21,7 +21,7 @@ async function callApi(organizationId: string, path: string, options: RequestIni
   return data;
 }
 
-export default function AgendaPanel({ organizationId, userId }: { organizationId: string; userId: string }) {
+export default function AgendaPanel({ organizationId, userId, canManageClinicalRecords }: { organizationId: string; userId: string; canManageClinicalRecords: boolean }) {
   const [day, setDay] = useState(() => new Date().toLocaleDateString('en-CA'));
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -30,9 +30,11 @@ export default function AgendaPanel({ organizationId, userId }: { organizationId
   const [end, setEnd] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const refreshRequestId = useRef(0);
   const [clinicalContext, setClinicalContext] = useState<{ patientId: string; patientName: string; appointmentId?: string; canStartAppointment: boolean } | null>(null);
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
+    const requestId = ++refreshRequestId.current;
     setLoading(true);
     setError('');
     try {
@@ -42,16 +44,20 @@ export default function AgendaPanel({ organizationId, userId }: { organizationId
         callApi(organizationId, '/appointments?from=' + encodeURIComponent(from.toISOString()) + '&to=' + encodeURIComponent(to.toISOString())),
         callApi(organizationId, '/patients'),
       ]);
+      if (requestId !== refreshRequestId.current) return;
       setAppointments(a.appointments || []);
       setPatients(p.patients || []);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Falha ao carregar.');
+      if (requestId === refreshRequestId.current) setError(cause instanceof Error ? cause.message : 'Falha ao carregar.');
     } finally {
-      setLoading(false);
+      if (requestId === refreshRequestId.current) setLoading(false);
     }
-  }
+  }, [day, organizationId]);
 
-  useEffect(() => { void refresh(); }, [day]);
+  useEffect(() => {
+    void refresh();
+    return () => { refreshRequestId.current += 1; };
+  }, [refresh]);
 
   async function create(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -81,6 +87,7 @@ export default function AgendaPanel({ organizationId, userId }: { organizationId
     key={clinicalContext.appointmentId || clinicalContext.patientId}
     organizationId={organizationId}
     userId={userId}
+    canManageClinicalRecords={canManageClinicalRecords}
     canStartAppointment={clinicalContext.canStartAppointment}
     patientId={clinicalContext.patientId}
     patientName={clinicalContext.patientName}
@@ -105,7 +112,7 @@ export default function AgendaPanel({ organizationId, userId }: { organizationId
           <button type="button" className="clinical-secondary" onClick={() => {
             const patient = patients.find(p => p.id === item.patient_id);
             if (!patient) { setError('Não foi possível identificar o paciente deste agendamento.'); return; }
-            setClinicalContext({ patientId: patient.id, patientName: patient.full_name, appointmentId: item.id, canStartAppointment: item.professional_id === userId && patient.professional_id === userId });
+            setClinicalContext({ patientId: patient.id, patientName: patient.full_name, appointmentId: item.id, canStartAppointment: item.professional_id === userId && (canManageClinicalRecords || patient.professional_id === userId) });
           }}>Abrir atendimento e histórico</button>
         </li>)}</ul>}
     </div>
