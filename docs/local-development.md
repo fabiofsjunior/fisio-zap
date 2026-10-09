@@ -14,6 +14,8 @@ As portas não são fixas e não devem ser assumidas por outras partes do sistem
 
 ## Perfis de teste
 
+Os scripts de bootstrap, criação de usuário e RLS aceitam somente Supabase local isolado. Configure no `.env.local` a URL HTTP `http://127.0.0.1:54321` (ou `localhost` / `[::1]`), as chaves do Supabase local e `FISIOZAP_ALLOW_LOCAL_TEST_MUTATIONS=true`. URLs remotas são recusadas antes de criar clientes, mesmo com opt-in. Não reutilize chaves ou dados de produção.
+
 Depois de configurar `SUPABASE_SERVICE_ROLE_KEY` apenas no ambiente local, execute:
 
 ```bash

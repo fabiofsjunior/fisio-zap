@@ -1,4 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
+import { assertLocalSupabaseTestMutations } from './local-supabase-test-guard.mjs';
+
+assertLocalSupabaseTestMutations();
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -77,6 +80,14 @@ async function main() {
     const foreignEncounter = await must(admin.from('clinical_encounters').insert({
       organization_id: foreignOrgId, patient_id: foreignPatient.id, professional_id: owner.id,
     }).select('id').single(), 'criar atendimento de outra organização');
+    const foreignDraftEvolution = await must(admin.from('clinical_evolutions').insert({
+      organization_id: foreignOrgId, encounter_id: foreignEncounter.id, author_id: owner.id,
+      content: 'Rascunho sintético de outra organização.',
+    }).select('id').single(), 'criar evolução de outra organização');
+    // Positive control: privileged reads confirm both foreign fixtures exist.
+    for (const [table, id] of [['clinical_encounters', foreignEncounter.id], ['clinical_evolutions', foreignDraftEvolution.id]]) {
+      await must(admin.from(table).select('id').eq('id', id).single(), 'verificar fixture clínica estrangeira');
+    }
     const foreignExercise = await must(admin.from('clinical_exercises').insert({
       organization_id: foreignOrgId, encounter_id: foreignEncounter.id, title: 'Exercício estrangeiro sintético',
     }).select('id').single(), 'criar exercício de outra organização');
@@ -123,6 +134,10 @@ async function main() {
     if (foreignProtocolRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler protocolo de outra organização.');
     const foreignProtocolLinkRead = await must(client.from('clinical_encounter_protocols').select('protocol_id').eq('encounter_id', foreignEncounter.id), 'testar leitura de vínculo clínico entre organizações');
     if (foreignProtocolLinkRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler vínculo clínico de outra organização.');
+    for (const [table, id] of [['clinical_encounters', foreignEncounter.id], ['clinical_evolutions', foreignDraftEvolution.id]]) {
+      const rows = await must(client.from(table).select('id').eq('id', id), 'testar leitura clínica cruzada');
+      if (rows.length !== 0) throw new Error(`RLS falhou: leitura cruzada em ${table}.`);
+    }
 
     const foreignUpdate = await client.from('patients').update({ notes: 'bloqueio RLS' }).eq('id', foreignPatient.id).select('id');
     if (foreignUpdate.error) throw new Error(`RLS update retornou erro inesperado: ${foreignUpdate.error.message}`);
@@ -251,6 +266,7 @@ async function main() {
     console.log('RLS NEGATIVE TEST OK');
     console.log(`Memberships do profissional: ${ownMembership.length}`);
     console.log('Leitura/alteração em outra organização: BLOQUEADAS');
+    console.log('Leitura de atendimentos e evoluções em outra organização: BLOQUEADA');
     console.log('Acesso a atendimento/evolução de colega na mesma organização: BLOQUEADO');
     console.log('CRUD de exercício próprio e isolamento de exercícios/protocolos/vínculos: VERIFICADOS');
     console.log('Criação para paciente de colega e autoria forjada: BLOQUEADAS');
