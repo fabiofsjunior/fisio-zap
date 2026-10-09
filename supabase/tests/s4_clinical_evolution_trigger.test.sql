@@ -1,5 +1,5 @@
 begin;
-select plan(8);
+select plan(10);
 
 insert into auth.users (
   id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -18,10 +18,21 @@ insert into public.organization_members (organization_id, user_id, role) values
 insert into public.patients (id, organization_id, professional_id, full_name)
 values ('f2000000-0000-4000-8000-000000000001', 'f1000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002', 'Paciente sintético pgTAP');
 
-insert into public.clinical_encounters (id, organization_id, patient_id, professional_id)
+insert into public.appointments (id, organization_id, patient_id, professional_id, starts_at, ends_at, status)
+values (
+  'f5000000-0000-4000-8000-000000000001',
+  'f1000000-0000-4000-8000-000000000001',
+  'f2000000-0000-4000-8000-000000000001',
+  'f0000000-0000-4000-8000-000000000002',
+  '2026-10-09 09:00:00+00',
+  '2026-10-09 10:00:00+00',
+  'scheduled'
+);
+
+insert into public.clinical_encounters (id, organization_id, patient_id, professional_id, appointment_id)
 values
-  ('f3000000-0000-4000-8000-000000000001', 'f1000000-0000-4000-8000-000000000001', 'f2000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002'),
-  ('f3000000-0000-4000-8000-000000000002', 'f1000000-0000-4000-8000-000000000001', 'f2000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002');
+  ('f3000000-0000-4000-8000-000000000001', 'f1000000-0000-4000-8000-000000000001', 'f2000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002', null),
+  ('f3000000-0000-4000-8000-000000000002', 'f1000000-0000-4000-8000-000000000001', 'f2000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002', 'f5000000-0000-4000-8000-000000000001');
 
 insert into public.clinical_evolutions (id, organization_id, encounter_id, author_id, content)
 values
@@ -74,6 +85,22 @@ select lives_ok(
     set status='completed', completed_at=statement_timestamp()
     where id='f3000000-0000-4000-8000-000000000002'$$,
   'encounter can be completed after draft resolution'
+);
+
+select throws_ok(
+  $$update public.clinical_encounters
+    set status='in_progress', completed_at=null
+    where id='f3000000-0000-4000-8000-000000000002'$$,
+  'P0001', 'Completed clinical encounters are immutable',
+  'completed encounters cannot be reopened'
+);
+
+select throws_ok(
+  $$update public.appointments
+    set professional_id='f0000000-0000-4000-8000-000000000001'
+    where id='f5000000-0000-4000-8000-000000000001'$$,
+  '23503', null,
+  'appointment professional cannot change while linked to an encounter'
 );
 
 select throws_ok(
