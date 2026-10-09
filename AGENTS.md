@@ -43,3 +43,13 @@ CI verde
 ```
 
 Uma falha em qualquer etapa bloqueia o merge.
+
+## Frontend — skills obrigatórias
+
+Antes de criar ou refatorar interfaces, o agente deve consultar e aplicar as orientações da [Issue #4](https://github.com/fabiofsjunior/fisio-zap/issues/4) e a skill [Impeccable](https://impeccable.style/#language), quando disponível no ambiente de execução.
+
+- Verificar explicitamente se a skill está instalada/acessível e ler suas instruções antes de editar UI. Não afirmar que foi usada apenas por existir um link.
+- Se a skill não estiver disponível, registrar a limitação na PR; não simular sua execução. Seguir as diretrizes públicas acessíveis e o design existente, sem bloquear correções críticas.
+- Aplicar hierarquia visual, acessibilidade, responsividade, estados de carregamento/erro, consistência e testes pertinentes.
+- Registrar na PR quais orientações foram efetivamente aplicadas, com evidências dos testes.
+- Trabalhar na `TESTES`; não modificar `main` diretamente nem mesclar sem CI verde e revisão.
