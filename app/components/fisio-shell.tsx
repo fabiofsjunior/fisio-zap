@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { ROLE_MODULES, type FisioRole } from '@/lib/access';
 import { createBrowserClient } from '@supabase/ssr';
 import PatientsPanel from '@/app/components/patients-panel';
+import AgendaPanel from '@/app/components/agenda-panel';
 
 type Message = { id: number; role: 'user' | 'assistant'; text: string; mode?: 'demo' };
 
@@ -87,6 +88,7 @@ export default function FisioShell({ email, role }: { email: string | null; role
 
   function renderModuleScreen() {
     if (!active) return null;
+    if (activeModule === 'Agenda' || activeModule === 'Minha rotina') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><AgendaPanel /></>;
     if (activeModule === 'Pacientes') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><PatientsPanel /></>;
     const [, title, description] = active;
     const actions: Record<string, string[]> = {
