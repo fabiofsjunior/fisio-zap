@@ -158,7 +158,7 @@ export default function ClinicalPanel({
 
   useEffect(() => {
     if (encounterId && selectedEncounter) void loadEncounterDetails(encounterId);
-    else if (!encounterId) clearEncounterDetails();
+    else clearEncounterDetails();
   }, [encounterId, selectedEncounter?.id, loadEncounterDetails, clearEncounterDetails]);
 
   useEffect(() => {
@@ -384,7 +384,7 @@ export default function ClinicalPanel({
         {historyLoading ? <p role="status">Carregando histórico…</p> : encounters.length === 0
           ? <p>Nenhum atendimento registrado.</p>
           : <ul className="clinical-timeline">{encounters.map(item => <li key={item.id}>
-            <button type="button" className={item.id === encounterId ? 'clinical-timeline-item selected' : 'clinical-timeline-item'} onClick={() => { setEncounterId(item.id); setReviewEvolutionId(''); setContent(''); setEditingEvolutionId(''); }}>
+            <button type="button" className={item.id === encounterId ? 'clinical-timeline-item selected' : 'clinical-timeline-item'} onClick={() => { clearEncounterDetails(); setEncounterId(item.id); }}>
               <strong>{new Date(item.started_at).toLocaleString('pt-BR')}</strong>
               <span>{item.status === 'in_progress' ? 'Em andamento' : 'Finalizado'}</span>
             </button>
