@@ -21,8 +21,16 @@ alter table public.appointments add constraint appointments_s4_identity_unique u
 alter table public.clinical_encounters add constraint clinical_encounters_appointment_identity_fk
  foreign key (organization_id,appointment_id,patient_id,professional_id)
  references public.appointments(organization_id,id,patient_id,professional_id) on delete restrict;
-create or replace function public.s4_validate_encounter_appointment() returns trigger language plpgsql set search_path = '' as $s4$
+create or replace function public.s4_prepare_clinical_encounter() returns trigger language plpgsql set search_path = '' as $s4$
 begin
+ if tg_op='INSERT' then
+  if new.status <> 'in_progress' or new.completed_at is not null then
+   raise exception 'Clinical encounters must start in progress';
+  end if;
+  new.started_at := statement_timestamp();
+  new.created_at := statement_timestamp();
+  new.updated_at := statement_timestamp();
+ end if;
  if new.appointment_id is not null and not exists (
   select 1 from public.appointments a
   where a.id=new.appointment_id and a.organization_id=new.organization_id
@@ -30,9 +38,9 @@ begin
  ) then raise exception 'Appointment does not match encounter patient and professional'; end if;
  return new;
 end $s4$;
-revoke all on function public.s4_validate_encounter_appointment() from public, anon, authenticated;
+revoke all on function public.s4_prepare_clinical_encounter() from public, anon, authenticated;
 create trigger s4_encounter_appointment_match before insert or update on public.clinical_encounters
- for each row execute function public.s4_validate_encounter_appointment();
+ for each row execute function public.s4_prepare_clinical_encounter();
 create unique index clinical_encounters_org_appointment_unique on public.clinical_encounters(organization_id,appointment_id) where appointment_id is not null;
 create index clinical_encounters_patient_history_idx on public.clinical_encounters(organization_id,patient_id,started_at desc);
 create table public.clinical_evolutions (
@@ -80,12 +88,21 @@ begin
   if encounter_status is distinct from 'in_progress' then
    raise exception 'Clinical evolutions require an in-progress encounter';
   end if;
+  new.created_at := statement_timestamp();
+  new.updated_at := statement_timestamp();
   return new;
  end if;
  if old.status='confirmed' then raise exception 'Confirmed clinical evolution is immutable'; end if;
+ if new.id is distinct from old.id
+  or new.organization_id is distinct from old.organization_id
+  or new.encounter_id is distinct from old.encounter_id
+  or new.author_id is distinct from old.author_id
+  or new.created_at is distinct from old.created_at then
+  raise exception 'Clinical evolution identity is immutable';
+ end if;
  select ce.status into encounter_status
  from public.clinical_encounters ce
- where ce.organization_id=new.organization_id and ce.id=new.encounter_id
+ where ce.organization_id=old.organization_id and ce.id=old.encounter_id
  for update;
  if encounter_status is distinct from 'in_progress' then
   raise exception 'Clinical evolutions require an in-progress encounter';
@@ -94,11 +111,11 @@ begin
   if new.content is distinct from old.content then
    raise exception 'Review the draft before confirming it';
   end if;
-  -- A caller-supplied timestamp is never authoritative.
   new.confirmed_at := statement_timestamp();
  elsif new.confirmed_at is not null then
   raise exception 'Draft confirmation timestamp must be null';
  end if;
+ new.updated_at := statement_timestamp();
  return new;
 end
 $s4$;
@@ -186,6 +203,7 @@ using ((select private.is_org_member(organization_id))
   ))));
 create policy s4_encounters_insert on public.clinical_encounters for insert to authenticated
 with check ((select private.is_org_member(organization_id))
+ and status='in_progress' and completed_at is null
  and ((select private.is_org_admin(organization_id))
   or (professional_id=(select auth.uid()) and exists (
    select 1 from public.patients p
