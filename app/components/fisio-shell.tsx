@@ -5,6 +5,7 @@ import { ROLE_MODULES, type FisioRole } from '@/lib/access';
 import { createBrowserClient } from '@supabase/ssr';
 import PatientsPanel from '@/app/components/patients-panel';
 import AgendaPanel from '@/app/components/agenda-panel';
+import ClinicalPanel from '@/app/components/clinical-panel';
 
 type Message = { id: number; role: 'user' | 'assistant'; text: string; mode?: 'demo' };
 
@@ -18,7 +19,7 @@ const modules = [
   ['💰', 'Financeiro', 'Entradas e despesas.'],
 ];
 
-export default function FisioShell({ email, role }: { email: string | null; role: FisioRole }) {
+export default function FisioShell({ email, role, organizationId }: { email: string | null; role: FisioRole; organizationId: string }) {
   const visibleModules = modules.filter(([, title]) => ROLE_MODULES[role].includes(title));
   const [tab, setTab] = useState<'chat' | 'panel' | 'tests'>('chat');
   const [activeModule, setActiveModule] = useState<string | null>(null);
@@ -88,8 +89,9 @@ export default function FisioShell({ email, role }: { email: string | null; role
 
   function renderModuleScreen() {
     if (!active) return null;
-    if (activeModule === 'Agenda' || activeModule === 'Minha rotina') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><AgendaPanel /></>;
+    if (activeModule === 'Agenda' || activeModule === 'Minha rotina') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><AgendaPanel organizationId={organizationId} /></>;
     if (activeModule === 'Pacientes') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><PatientsPanel /></>;
+    if (activeModule === 'Evoluções' || activeModule === 'Exercícios e protocolos') return <ClinicalPanel organizationId={organizationId} onClose={() => setActiveModule(null)} />;
     const [, title, description] = active;
     const actions: Record<string, string[]> = {
       'Minha rotina': ['Ver agenda de hoje', 'Registrar pendência'],
