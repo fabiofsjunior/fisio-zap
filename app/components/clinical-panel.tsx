@@ -1,12 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createBrowserClient } from '@supabase/ssr';
 
-type Patient = { id: string; full_name: string };
+type Patient = { id: string; full_name: string; professional_id: string };
 type Encounter = {
   id: string;
   patient_id: string;
+  professional_id: string;
   appointment_id: string | null;
   status: 'in_progress' | 'completed';
   started_at: string;
@@ -44,6 +45,8 @@ async function clinicalApi<T>(organizationId: string, path: string, options: Req
 
 export default function ClinicalPanel({
   organizationId,
+  userId,
+  canStartAppointment,
   patientId: initialPatientId,
   patientName: initialPatientName,
   appointmentId,
@@ -51,6 +54,8 @@ export default function ClinicalPanel({
   onClose,
 }: {
   organizationId: string;
+  userId: string;
+  canStartAppointment?: boolean;
   patientId?: string;
   patientName?: string;
   appointmentId?: string;
@@ -76,8 +81,22 @@ export default function ClinicalPanel({
   const [exerciseTitle, setExerciseTitle] = useState('');
   const [exerciseInstructions, setExerciseInstructions] = useState('');
   const [selectedProtocolId, setSelectedProtocolId] = useState('');
+  const detailRequestId = useRef(0);
+
+  const clearEncounterDetails = useCallback(() => {
+    detailRequestId.current += 1;
+    setDetailLoading(false);
+    setEvolutions([]);
+    setExercises([]);
+    setProtocols([]);
+    setAvailableProtocols([]);
+    setReviewEvolutionId('');
+    setEditingEvolutionId('');
+    setContent('');
+  }, []);
 
   const loadEncounterDetails = useCallback(async (id: string) => {
+    const requestId = ++detailRequestId.current;
     setDetailLoading(true);
     setError('');
     try {
@@ -87,14 +106,15 @@ export default function ClinicalPanel({
         clinicalApi<{ protocols: Protocol[] }>(organizationId, '/encounters/' + id + '/protocols'),
         clinicalApi<{ protocols: Protocol[] }>(organizationId, '/protocols'),
       ]);
+      if (requestId !== detailRequestId.current) return;
       setEvolutions(evolutionData.evolutions || []);
       setExercises(exerciseData.exercises || []);
       setProtocols(linkedProtocolData.protocols || []);
       setAvailableProtocols(protocolData.protocols || []);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Falha ao carregar o atendimento.');
+      if (requestId === detailRequestId.current) setError(cause instanceof Error ? cause.message : 'Falha ao carregar o atendimento.');
     } finally {
-      setDetailLoading(false);
+      if (requestId === detailRequestId.current) setDetailLoading(false);
     }
   }, [organizationId]);
 
@@ -102,11 +122,15 @@ export default function ClinicalPanel({
     if (!patientId) {
       setEncounters([]);
       setEncounterId('');
+      setHistoryLoading(false);
+      clearEncounterDetails();
       return;
     }
     let cancelled = false;
     setHistoryLoading(true);
     setError('');
+    setEncounters([]);
+    clearEncounterDetails();
     clinicalApi<{ encounters: Encounter[] }>(organizationId, '/encounters?patient_id=' + encodeURIComponent(patientId))
       .then(({ encounters: rows }) => {
         if (cancelled) return;
@@ -128,17 +152,14 @@ export default function ClinicalPanel({
         if (!cancelled) setHistoryLoading(false);
       });
     return () => { cancelled = true; };
-  }, [organizationId, patientId, appointmentId, initialEncounterId]);
+  }, [organizationId, patientId, appointmentId, initialEncounterId, clearEncounterDetails]);
+
+  const selectedEncounter = encounters.find(item => item.id === encounterId);
 
   useEffect(() => {
-    if (encounterId) void loadEncounterDetails(encounterId);
-    else {
-      setEvolutions([]);
-      setExercises([]);
-      setProtocols([]);
-      setAvailableProtocols([]);
-    }
-  }, [encounterId, loadEncounterDetails]);
+    if (encounterId && selectedEncounter) void loadEncounterDetails(encounterId);
+    else if (!encounterId) clearEncounterDetails();
+  }, [encounterId, selectedEncounter?.id, loadEncounterDetails, clearEncounterDetails]);
 
   useEffect(() => {
     if (initialPatientId) return;
@@ -148,6 +169,15 @@ export default function ClinicalPanel({
       .catch(cause => { if (!cancelled) setError(cause instanceof Error ? cause.message : 'Não foi possível carregar pacientes.'); });
     return () => { cancelled = true; };
   }, [initialPatientId, organizationId]);
+
+  function changePatient(nextPatientId: string) {
+    setPatientId(nextPatientId);
+    setEncounters([]);
+    setEncounterId('');
+    setHistoryLoading(Boolean(nextPatientId));
+    setError('');
+    clearEncounterDetails();
+  }
 
   async function refreshHistory() {
     if (!patientId) return;
@@ -168,6 +198,7 @@ export default function ClinicalPanel({
         method: 'POST',
         body: JSON.stringify({ patient_id: patientId, appointment_id: appointmentId || null }),
       });
+      clearEncounterDetails();
       setEncounterId(result.encounter.id);
       await refreshHistory();
       setNotice('Atendimento iniciado. As informações ainda não confirmadas podem ser revisadas.');
@@ -323,7 +354,9 @@ export default function ClinicalPanel({
   }
 
   const patientName = initialPatientName || patients.find(item => item.id === patientId)?.full_name || 'Paciente';
-  const selectedEncounter = encounters.find(item => item.id === encounterId);
+  const selectedPatient = patients.find(item => item.id === patientId);
+  const canStartEncounter = appointmentId ? canStartAppointment === true : selectedPatient?.professional_id === userId;
+  const canWriteEncounter = selectedEncounter?.professional_id === userId;
   const linkedProtocolIds = new Set(protocols.map(item => item.id));
   const unlinkedProtocols = availableProtocols.filter(item => !linkedProtocolIds.has(item.id));
   const drafts = evolutions.filter(item => item.status === 'draft');
@@ -336,7 +369,7 @@ export default function ClinicalPanel({
 
     {!initialPatientId && <div className="panel">
       <label htmlFor="clinical-patient">Paciente</label>
-      <select id="clinical-patient" value={patientId} onChange={event => { setPatientId(event.target.value); setEncounterId(''); }}>
+      <select id="clinical-patient" value={patientId} onChange={event => changePatient(event.target.value)}>
         <option value="">Selecione um paciente</option>
         {patients.map(item => <option key={item.id} value={item.id}>{item.full_name}</option>)}
       </select>
@@ -356,9 +389,10 @@ export default function ClinicalPanel({
               <span>{item.status === 'in_progress' ? 'Em andamento' : 'Finalizado'}</span>
             </button>
           </li>)}</ul>}
-        {!encounterId && <button type="button" className="clinical-primary" onClick={() => void startEncounter()} disabled={saving || historyLoading}>
+        {!encounterId && canStartEncounter && <button type="button" className="clinical-primary" onClick={() => void startEncounter()} disabled={saving || historyLoading}>
           {saving ? 'Iniciando…' : appointmentId ? 'Iniciar atendimento deste agendamento' : 'Iniciar novo atendimento'}
         </button>}
+        {!encounterId && !canStartEncounter && <p className="clinical-readonly-note">Somente o profissional responsável pode iniciar este atendimento.</p>}
       </aside>
 
       <div className="clinical-record">
@@ -366,15 +400,16 @@ export default function ClinicalPanel({
           : detailLoading ? <div className="panel" role="status">Carregando prontuário…</div>
           : selectedEncounter ? <div className="panel">
             <div className="clinical-section-heading"><div><span className="eyebrow">ATENDIMENTO</span><h3>{patientName}</h3><p>{new Date(selectedEncounter.started_at).toLocaleString('pt-BR')} · {selectedEncounter.status === 'in_progress' ? 'Em andamento' : 'Finalizado'}</p></div>
-              {selectedEncounter.status === 'in_progress' && <button type="button" className="clinical-secondary" onClick={() => void completeEncounter()} disabled={saving || drafts.length > 0} title={drafts.length ? 'Confirme os rascunhos antes de finalizar.' : undefined}>{saving ? 'Salvando…' : 'Finalizar atendimento'}</button>}
+              {selectedEncounter.status === 'in_progress' && canWriteEncounter && <button type="button" className="clinical-secondary" onClick={() => void completeEncounter()} disabled={saving || drafts.length > 0} title={drafts.length ? 'Confirme os rascunhos antes de finalizar.' : undefined}>{saving ? 'Salvando…' : 'Finalizar atendimento'}</button>}
             </div>
+            {selectedEncounter.status === 'in_progress' && !canWriteEncounter && <p className="clinical-readonly-note">Visualização somente leitura. Alterações ficam disponíveis ao profissional responsável.</p>}
 
             <section className="clinical-section" aria-labelledby="evolution-heading">
               <h4 id="evolution-heading">Evoluções</h4>
               {evolutions.length === 0 ? <p>Nenhuma evolução neste atendimento.</p> : <div className="clinical-list">{evolutions.map(item => <article className="clinical-entry" key={item.id}>
                 <div className="clinical-entry-head"><strong>{item.status === 'draft' ? 'Rascunho' : 'Confirmada'}</strong><time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString('pt-BR')}</time></div>
                 <p className="clinical-content">{item.content}</p>
-                {item.status === 'draft' && selectedEncounter.status === 'in_progress' && <div className="clinical-actions">
+                {item.status === 'draft' && selectedEncounter.status === 'in_progress' && canWriteEncounter && item.author_id === userId && <div className="clinical-actions">
                   <button type="button" className="clinical-secondary" onClick={() => editEvolution(item)} disabled={saving}>Editar rascunho</button>
                   <button type="button" className="clinical-primary" onClick={() => setReviewEvolutionId(item.id)} disabled={saving}>Revisar e confirmar</button>
                 </div>}
@@ -384,7 +419,7 @@ export default function ClinicalPanel({
                 </div>}
               </article>)}</div>}
 
-              {selectedEncounter.status === 'in_progress' && <form className="clinical-form" onSubmit={event => void saveEvolution(event)}>
+              {selectedEncounter.status === 'in_progress' && canWriteEncounter && <form className="clinical-form" onSubmit={event => void saveEvolution(event)}>
                 <label htmlFor="evolution-content">{editingEvolutionId ? 'Editar evolução em rascunho' : 'Nova evolução em rascunho'}</label>
                 <textarea id="evolution-content" rows={6} maxLength={10000} required value={content} onChange={event => setContent(event.target.value)} placeholder="Registre a evolução clínica para revisão antes da confirmação." />
                 <div className="clinical-actions"><button type="submit" className="clinical-primary" disabled={saving || !content.trim()}>{saving ? 'Salvando…' : editingEvolutionId ? 'Salvar rascunho' : 'Salvar rascunho'}</button>{editingEvolutionId && <button type="button" className="clinical-secondary" onClick={() => { setEditingEvolutionId(''); setContent(''); }} disabled={saving}>Cancelar edição</button>}</div>
@@ -393,8 +428,8 @@ export default function ClinicalPanel({
 
             <section className="clinical-section" aria-labelledby="exercise-heading">
               <h4 id="exercise-heading">Exercícios prescritos</h4>
-              {exercises.length === 0 ? <p>Nenhum exercício registrado.</p> : <ul className="clinical-resource-list">{exercises.map(item => <li key={item.id}><div><strong>{item.title}</strong>{item.instructions && <p>{item.instructions}</p>}</div>{selectedEncounter.status === 'in_progress' && <button type="button" className="clinical-secondary" onClick={() => void removeExercise(item.id)} disabled={saving}>Remover</button>}</li>)}</ul>}
-              {selectedEncounter.status === 'in_progress' && <form className="clinical-form" onSubmit={event => void addExercise(event)}>
+              {exercises.length === 0 ? <p>Nenhum exercício registrado.</p> : <ul className="clinical-resource-list">{exercises.map(item => <li key={item.id}><div><strong>{item.title}</strong>{item.instructions && <p>{item.instructions}</p>}</div>{selectedEncounter.status === 'in_progress' && canWriteEncounter && <button type="button" className="clinical-secondary" onClick={() => void removeExercise(item.id)} disabled={saving}>Remover</button>}</li>)}</ul>}
+              {selectedEncounter.status === 'in_progress' && canWriteEncounter && <form className="clinical-form" onSubmit={event => void addExercise(event)}>
                 <label htmlFor="exercise-title">Adicionar exercício</label><input id="exercise-title" required maxLength={200} value={exerciseTitle} onChange={event => setExerciseTitle(event.target.value)} placeholder="Nome do exercício" />
                 <label htmlFor="exercise-instructions">Instruções</label><textarea id="exercise-instructions" rows={3} maxLength={4000} value={exerciseInstructions} onChange={event => setExerciseInstructions(event.target.value)} placeholder="Séries, repetições ou orientações" />
                 <button type="submit" className="clinical-primary" disabled={saving || !exerciseTitle.trim()}>{saving ? 'Salvando…' : 'Registrar exercício'}</button>
@@ -403,8 +438,8 @@ export default function ClinicalPanel({
 
             <section className="clinical-section" aria-labelledby="protocol-heading">
               <h4 id="protocol-heading">Protocolos</h4>
-              {protocols.length === 0 ? <p>Nenhum protocolo associado.</p> : <ul className="clinical-resource-list">{protocols.map(item => <li key={item.id}><div><strong>{item.title}</strong>{item.description && <p>{item.description}</p>}</div>{selectedEncounter.status === 'in_progress' && <button type="button" className="clinical-secondary" onClick={() => void removeProtocol(item.id)} disabled={saving}>Remover</button>}</li>)}</ul>}
-              {selectedEncounter.status === 'in_progress' && <form className="clinical-form clinical-inline-form" onSubmit={event => void addProtocol(event)}>
+              {protocols.length === 0 ? <p>Nenhum protocolo associado.</p> : <ul className="clinical-resource-list">{protocols.map(item => <li key={item.id}><div><strong>{item.title}</strong>{item.description && <p>{item.description}</p>}</div>{selectedEncounter.status === 'in_progress' && canWriteEncounter && <button type="button" className="clinical-secondary" onClick={() => void removeProtocol(item.id)} disabled={saving}>Remover</button>}</li>)}</ul>}
+              {selectedEncounter.status === 'in_progress' && canWriteEncounter && <form className="clinical-form clinical-inline-form" onSubmit={event => void addProtocol(event)}>
                 <label htmlFor="protocol-select">Associar protocolo</label>
                 <select id="protocol-select" value={selectedProtocolId} onChange={event => setSelectedProtocolId(event.target.value)}>
                   <option value="">Selecione um protocolo</option>{unlinkedProtocols.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
