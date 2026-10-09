@@ -19,6 +19,18 @@ create table public.clinical_encounters (
 alter table public.appointments add constraint appointments_s4_org_id_unique unique (organization_id,id);
 alter table public.clinical_encounters add constraint clinical_encounters_appointment_org_fk
  foreign key (organization_id,appointment_id) references public.appointments(organization_id,id) on delete restrict;
+create or replace function public.s4_validate_encounter_appointment() returns trigger language plpgsql set search_path = '' as $
+begin
+ if new.appointment_id is not null and not exists (
+  select 1 from public.appointments a
+  where a.id=new.appointment_id and a.organization_id=new.organization_id
+    and a.patient_id=new.patient_id and a.professional_id=new.professional_id
+ ) then raise exception 'Appointment does not match encounter patient and professional'; end if;
+ return new;
+end $;
+revoke all on function public.s4_validate_encounter_appointment() from public, anon, authenticated;
+create trigger s4_encounter_appointment_match before insert or update on public.clinical_encounters
+ for each row execute function public.s4_validate_encounter_appointment();
 create unique index clinical_encounters_org_appointment_unique on public.clinical_encounters(organization_id,appointment_id) where appointment_id is not null;
 create index clinical_encounters_patient_history_idx on public.clinical_encounters(organization_id,patient_id,started_at desc);
 create table public.clinical_evolutions (
