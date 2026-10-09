@@ -35,6 +35,12 @@ async function main() {
     }).select('id').single(), 'criar organização isolada');
     orgId = org.id;
 
+    await must(admin.from('organization_members').insert({
+      organization_id: orgId,
+      user_id: owner.id,
+      role: 'owner',
+    }), 'associar responsável à organização isolada');
+
     const patient = await must(admin.from('patients').insert({
       organization_id: orgId,
       professional_id: owner.id,

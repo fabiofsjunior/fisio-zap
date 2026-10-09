@@ -30,3 +30,12 @@ A reconciliação foi desenhada para não destruir os dados existentes. O remoto
 ## 08/10/2026 — retomada da TESTES
 - Branch `TESTES` recriada a partir da `main` para retomada controlada da validação da S1.5.
 - O commit deste checkpoint serve apenas para disparar novamente o CI; nenhuma funcionalidade de negócio foi iniciada.
+
+
+## 08/10/2026 — início da S2 Pacientes
+- S1.5 concluída e promovida para `main` pela PR #6 após CI verde.
+- S2 iniciada exclusivamente em `TESTES`.
+- Migration de hardening de pacientes criada com email, integridade de organização/profissional/grupo, índices e RLS dedicada.
+- API server-side de pacientes implementada com autenticação Bearer, validação de entrada e CRUD.
+- Interface autenticada de pacientes conectada ao painel.
+- Próxima validação: CI, build frontend, testes backend e replay das migrations; depois testes negativos/RLS e PR para `main`.
