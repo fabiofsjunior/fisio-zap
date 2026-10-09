@@ -145,6 +145,79 @@ test('protocol association removal accepts the documented body contract',async()
   }finally{await s.close()}
 });
 
+test('professional encounter history is scoped while owner can review organization history',async()=>{
+  const patientId='33333333-3333-4333-8333-333333333333';
+  const own={id:'44444444-4444-4444-8444-444444444444',organization_id:'22222222-2222-4222-8222-222222222222',patient_id:patientId,professional_id:'11111111-1111-4111-8111-111111111111',status:'in_progress',started_at:'2026-10-09T12:00:00Z'};
+  const peer={id:'55555555-5555-4555-8555-555555555555',organization_id:own.organization_id,patient_id:patientId,professional_id:'66666666-6666-4666-8666-666666666666',status:'completed',started_at:'2026-10-08T12:00:00Z'};
+  const professional=await startServer({encounters:[own,peer]});
+  const owner=await startServer({membership:{organization_id:own.organization_id,role:'owner'},encounters:[own,peer]});
+  try{
+    const mine=await request(professional.baseUrl,'/encounters?patient_id='+patientId,{headers:{Authorization:'Bearer valid'}});
+    assert.equal(mine.status,200);
+    assert.deepEqual((await mine.json()).encounters.map(item=>item.id),[own.id]);
+    const managed=await request(owner.baseUrl,'/encounters?patient_id='+patientId,{headers:{Authorization:'Bearer valid'}});
+    assert.equal(managed.status,200);
+    assert.deepEqual((await managed.json()).encounters.map(item=>item.id),[own.id,peer.id]);
+  }finally{await professional.close();await owner.close()}
+});
+
+test('professional can start an encounter for an assigned patient',async()=>{
+  const patient={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111'};
+  const s=await startServer({patients:[patient]});
+  try{
+    const response=await request(s.baseUrl,'/encounters',{method:'POST',headers:{Authorization:'Bearer valid'},body:{patient_id:patient.id}});
+    assert.equal(response.status,201);
+    const body=await response.json();
+    assert.equal(body.encounter.patient_id,patient.id);
+    assert.equal(body.encounter.organization_id,patient.organization_id);
+    assert.equal(body.encounter.professional_id,patient.professional_id);
+  }finally{await s.close()}
+});
+
+test('only the evolution author can edit a draft and completed encounters reject draft edits',async()=>{
+  const encounter={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',status:'in_progress'};
+  const peerDraft={id:'44444444-4444-4444-8444-444444444444',organization_id:encounter.organization_id,encounter_id:encounter.id,author_id:'55555555-5555-4555-8555-555555555555',content:'Rascunho de outro autor',status:'draft'};
+  const s=await startServer({encounters:[encounter],evolutions:[peerDraft]});
+  try{
+    const forbidden=await request(s.baseUrl,'/evolutions/'+peerDraft.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{content:'Edição indevida'}});
+    assert.equal(forbidden.status,403);
+  }finally{await s.close()}
+
+  const completed={...encounter,status:'completed'};
+  const ownDraft={...peerDraft,id:'66666666-6666-4666-8666-666666666666',author_id:'11111111-1111-4111-8111-111111111111'};
+  const completedServer=await startServer({encounters:[completed],evolutions:[ownDraft]});
+  try{
+    const conflict=await request(completedServer.baseUrl,'/evolutions/'+ownDraft.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{content:'Edição após finalizar'}});
+    assert.equal(conflict.status,409);
+  }finally{await completedServer.close()}
+});
+
+test('protocol association supports add, read with in-filter, and valid removal',async()=>{
+  const encounter={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',status:'in_progress'};
+  const protocol={id:'44444444-4444-4444-8444-444444444444',organization_id:encounter.organization_id,title:'Protocolo sintético',description:'Fixture de teste'};
+  const s=await startServer({encounters:[encounter],protocols:[protocol]});
+  try{
+    const linked=await request(s.baseUrl,'/encounters/'+encounter.id+'/protocols',{method:'POST',headers:{Authorization:'Bearer valid'},body:{protocol_id:protocol.id}});
+    assert.equal(linked.status,201);
+    const listed=await request(s.baseUrl,'/encounters/'+encounter.id+'/protocols',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(listed.status,200);
+    assert.deepEqual((await listed.json()).protocols.map(item=>item.id),[protocol.id]);
+    const removed=await request(s.baseUrl,'/encounters/'+encounter.id+'/protocols',{method:'DELETE',headers:{Authorization:'Bearer valid'},body:{protocol_id:protocol.id}});
+    assert.equal(removed.status,204);
+    const after=await request(s.baseUrl,'/encounters/'+encounter.id+'/protocols',{headers:{Authorization:'Bearer valid'}});
+    assert.deepEqual((await after.json()).protocols,[]);
+  }finally{await s.close()}
+});
+
+test('database completion race is reported as HTTP 409',async()=>{
+  const encounter={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',status:'in_progress'};
+  const s=await startServer({encounters:[encounter],operationErrors:{clinical_encounters:{update:{code:'P0001'}}}});
+  try{
+    const response=await request(s.baseUrl,'/encounters/'+encounter.id+'/complete',{method:'PATCH',headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,409);
+  }finally{await s.close()}
+});
+
 test('exercise creation validates payload before querying an encounter',async()=>{
   const s=await startServer();
   try{
