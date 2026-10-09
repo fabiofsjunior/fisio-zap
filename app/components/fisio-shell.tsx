@@ -19,7 +19,7 @@ const modules = [
   ['💰', 'Financeiro', 'Entradas e despesas.'],
 ];
 
-export default function FisioShell({ email, role, organizationId }: { email: string | null; role: FisioRole; organizationId: string }) {
+export default function FisioShell({ email, role, organizationId, userId }: { email: string | null; role: FisioRole; organizationId: string; userId: string }) {
   const visibleModules = modules.filter(([, title]) => ROLE_MODULES[role].includes(title));
   const [tab, setTab] = useState<'chat' | 'panel' | 'tests'>('chat');
   const [activeModule, setActiveModule] = useState<string | null>(null);
@@ -89,9 +89,9 @@ export default function FisioShell({ email, role, organizationId }: { email: str
 
   function renderModuleScreen() {
     if (!active) return null;
-    if (activeModule === 'Agenda' || activeModule === 'Minha rotina') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><AgendaPanel organizationId={organizationId} /></>;
+    if (activeModule === 'Agenda' || activeModule === 'Minha rotina') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><AgendaPanel organizationId={organizationId} userId={userId} /></>;
     if (activeModule === 'Pacientes') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><PatientsPanel /></>;
-    if (activeModule === 'Evoluções' || activeModule === 'Exercícios e protocolos') return <ClinicalPanel organizationId={organizationId} onClose={() => setActiveModule(null)} />;
+    if (activeModule === 'Evoluções' || activeModule === 'Exercícios e protocolos') return <ClinicalPanel organizationId={organizationId} userId={userId} onClose={() => setActiveModule(null)} />;
     const [, title, description] = active;
     const actions: Record<string, string[]> = {
       'Minha rotina': ['Ver agenda de hoje', 'Registrar pendência'],
