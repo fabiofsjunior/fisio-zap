@@ -6,17 +6,26 @@ process.env.NEXT_PUBLIC_SUPABASE_URL='http://test.local';
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY='test-anon-key';
 const {createApp}=await import('../src/index.js');
 
-function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},patients=[]}={}){
+function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[]}={}){
+  const memberRows=memberships??[membership];
+  const matchingRows=filters=>memberRows.filter(row=>filters.every(([key,value])=>row[key]===value));
   return {
     auth:{getUser:async token=>token==='valid'?{data:{user},error:null}:{data:{user:null},error:new Error('invalid token')}},
     from(table){
       const state={table,values:null,filters:[]};
       const api={
         select(){return api},eq(k,v){state.filters.push([k,v]);return api},ilike(){return api},order(){return api},limit(){return api},
-        maybeSingle:async()=>table==='organization_members'?{data:membership,error:null}:{data:patients.find(p=>state.filters.some(([k,v])=>k==='id'&&p.id===v))??null,error:null},
+        maybeSingle:async()=>{
+          if(table==='organization_members')return {data:matchingRows(state.filters)[0]??null,error:null};
+          if(table==='patients')return {data:patients.find(p=>state.filters.some(([k,v])=>k==='id'&&p.id===v))??null,error:null};
+          return {data:null,error:null};
+        },
         insert(v){state.values=v;return api},update(v){state.values=v;return api},delete(){return api},
         single:async()=>({data:state.values,error:null}),
-        then(resolve){return Promise.resolve({data:table==='patients'?patients:[],error:null}).then(resolve)}
+        then(resolve){
+          const data=table==='organization_members'?matchingRows(state.filters):table==='patients'?patients:[];
+          return Promise.resolve({data,error:null}).then(resolve);
+        }
       }; return api;
     }
   };
@@ -24,6 +33,46 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
 function startServer(options={}){const app=createApp({supabaseClientFactory:()=>mock(options)});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,close:()=>{server.close();server.closeAllConnections?.()}})))}
 async function request(baseUrl,path,options={}){return fetch(baseUrl+path,{...options,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...(options.headers||{})},body:options.body?JSON.stringify(options.body):undefined})}
 
+test('multiple memberships require an explicit authorized organization selection',async()=>{
+  const memberships=[
+    {organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},
+    {organization_id:'44444444-4444-4444-8444-444444444444',role:'professional'},
+  ];
+  const s=await startServer({memberships});
+  const headers={Authorization:'Bearer valid'};
+  try{
+    assert.equal((await request(s.baseUrl,'/encounters',{headers})).status,409);
+    const selected=await request(s.baseUrl,'/encounters',{headers:{...headers,'X-FisioZap-Organization-Id':memberships[1].organization_id}});
+    assert.equal(selected.status,200);
+    const unauthorized=await request(s.baseUrl,'/encounters',{headers:{...headers,'X-FisioZap-Organization-Id':'55555555-5555-4555-8555-555555555555'}});
+    assert.equal(unauthorized.status,403);
+  }finally{await s.close()}
+});
+
+test('exercise creation validates payload before querying an encounter',async()=>{
+  const s=await startServer();
+  try{
+    const response=await request(s.baseUrl,'/encounters/33333333-3333-4333-8333-333333333333/exercises',{method:'POST',headers:{Authorization:'Bearer valid'},body:{title:'   '}});
+    assert.equal(response.status,422);
+  }finally{await s.close()}
+});
+
+test('protocol catalog writes require owner or coordinator',async()=>{
+  const s=await startServer({membership:{organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'}});
+  try{
+    const response=await request(s.baseUrl,'/protocols',{method:'POST',headers:{Authorization:'Bearer valid'},body:{title:'Protocolo sintético'}});
+    assert.equal(response.status,403);
+  }finally{await s.close()}
+});
+
+test('protocol catalog read is authenticated',async()=>{
+  const s=await startServer();
+  try{
+    const response=await request(s.baseUrl,'/protocols',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    assert.deepEqual((await response.json()).protocols,[]);
+  }finally{await s.close()}
+});
 test('health remains public',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/health');assert.equal(r.status,200);await s.close()});
 test('chat remains authenticated',async()=>{const s=await startServer();assert.equal((await request(s.baseUrl,'/chat',{method:'POST',body:{message:'olá'}})).status,401);await s.close()});
 test('patients require authentication',async()=>{const s=await startServer();assert.equal((await request(s.baseUrl,'/patients')).status,401);await s.close()});
