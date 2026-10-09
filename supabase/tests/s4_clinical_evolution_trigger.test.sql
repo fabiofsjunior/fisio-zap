@@ -1,5 +1,5 @@
 begin;
-select plan(10);
+select plan(14);
 
 insert into auth.users (
   id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -29,15 +29,46 @@ values (
   'scheduled'
 );
 
-insert into public.clinical_encounters (id, organization_id, patient_id, professional_id, appointment_id)
+insert into public.clinical_encounters (
+  id, organization_id, patient_id, professional_id, appointment_id, started_at, created_at, updated_at
+)
 values
-  ('f3000000-0000-4000-8000-000000000001', 'f1000000-0000-4000-8000-000000000001', 'f2000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002', null),
-  ('f3000000-0000-4000-8000-000000000002', 'f1000000-0000-4000-8000-000000000001', 'f2000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002', 'f5000000-0000-4000-8000-000000000001');
+  ('f3000000-0000-4000-8000-000000000001', 'f1000000-0000-4000-8000-000000000001', 'f2000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002', null, '2999-01-01', '2999-01-01', '2999-01-01'),
+  ('f3000000-0000-4000-8000-000000000002', 'f1000000-0000-4000-8000-000000000001', 'f2000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002', 'f5000000-0000-4000-8000-000000000001', '2999-01-01', '2999-01-01', '2999-01-01');
 
-insert into public.clinical_evolutions (id, organization_id, encounter_id, author_id, content)
+insert into public.clinical_evolutions (id, organization_id, encounter_id, author_id, content, created_at, updated_at)
 values
-  ('f4000000-0000-4000-8000-000000000001', 'f1000000-0000-4000-8000-000000000001', 'f3000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002', 'Rascunho para testar confirmação'),
-  ('f4000000-0000-4000-8000-000000000002', 'f1000000-0000-4000-8000-000000000001', 'f3000000-0000-4000-8000-000000000002', 'f0000000-0000-4000-8000-000000000002', 'Rascunho para testar encerramento');
+  ('f4000000-0000-4000-8000-000000000001', 'f1000000-0000-4000-8000-000000000001', 'f3000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002', 'Rascunho para testar confirmação', '2999-01-01', '2999-01-01'),
+  ('f4000000-0000-4000-8000-000000000002', 'f1000000-0000-4000-8000-000000000001', 'f3000000-0000-4000-8000-000000000002', 'f0000000-0000-4000-8000-000000000002', 'Rascunho para testar encerramento', '2999-01-01', '2999-01-01');
+
+select ok(
+  (select abs(extract(epoch from (started_at - statement_timestamp()))) < 5
+      and abs(extract(epoch from (created_at - statement_timestamp()))) < 5
+      and abs(extract(epoch from (updated_at - statement_timestamp()))) < 5
+   from public.clinical_encounters where id='f3000000-0000-4000-8000-000000000001'),
+  'encounter timestamps are assigned by the server'
+);
+
+select throws_ok(
+  $$insert into public.clinical_encounters (
+      id, organization_id, patient_id, professional_id, status, completed_at
+    ) values (
+      'f3000000-0000-4000-8000-000000000003',
+      'f1000000-0000-4000-8000-000000000001',
+      'f2000000-0000-4000-8000-000000000001',
+      'f0000000-0000-4000-8000-000000000002',
+      'completed', '2999-01-01'
+    )$$,
+  'P0001', 'Clinical encounters must start in progress',
+  'encounters cannot be inserted as completed'
+);
+
+select ok(
+  (select abs(extract(epoch from (created_at - statement_timestamp()))) < 5
+      and abs(extract(epoch from (updated_at - statement_timestamp()))) < 5
+   from public.clinical_evolutions where id='f4000000-0000-4000-8000-000000000001'),
+  'draft evolution timestamps are assigned by the server'
+);
 
 select lives_ok(
   $$update public.clinical_evolutions
@@ -48,8 +79,9 @@ select lives_ok(
 
 select ok(
   (select abs(extract(epoch from (confirmed_at - statement_timestamp()))) < 2
+      and confirmed_at=updated_at
    from public.clinical_evolutions where id='f4000000-0000-4000-8000-000000000001'),
-  'confirmed_at is assigned from server statement time'
+  'confirmation timestamps are assigned by the server'
 );
 
 select throws_ok(
@@ -72,6 +104,14 @@ select throws_ok(
     where id='f3000000-0000-4000-8000-000000000002'$$,
   'P0001', 'Confirm or delete draft evolutions before completing the encounter',
   'encounter cannot be completed while a draft remains'
+);
+
+select throws_ok(
+  $$update public.clinical_evolutions
+    set encounter_id='f3000000-0000-4000-8000-000000000001'
+    where id='f4000000-0000-4000-8000-000000000002'$$,
+  'P0001', 'Clinical evolution identity is immutable',
+  'draft evolution cannot be moved to another encounter'
 );
 
 select lives_ok(
