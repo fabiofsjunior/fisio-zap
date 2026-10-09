@@ -20,6 +20,12 @@ async function must(promise, label) {
   return data;
 }
 
+function expectDeniedByPolicy(result, label, acceptedCodes = ['42501']) {
+  if (!result.error || !acceptedCodes.includes(result.error.code)) {
+    throw new Error(`${label}: esperada negação de autorização (${acceptedCodes.join(' ou ')}), recebido ${result.error?.code || 'sucesso'}.`);
+  }
+}
+
 async function main() {
   const users = await must(admin.auth.admin.listUsers({ page: 1, perPage: 1000 }), 'listar usuários');
   const owner = users.users.find((u) => u.email?.toLowerCase() === adminEmail.toLowerCase());
@@ -83,11 +89,6 @@ async function main() {
       organization_id: orgId, encounter_id: ownerEncounter.id, author_id: owner.id,
       content: 'Registro sintético de isolamento RLS.',
     }).select('id').single(), 'criar evolução sintética de outro profissional');
-    const professionalEvolution = await must(admin.from('clinical_evolutions').insert({
-      organization_id: orgId, encounter_id: professionalEncounter.id, author_id: professional.id,
-      content: 'Rascunho sintético do profissional de teste.',
-    }).select('id').single(), 'criar rascunho sintético do profissional');
-
     const login = await must(client.auth.signInWithPassword({ email: testEmail, password: testPassword }), 'login profissional');
     if (!login.session) throw new Error('Login não retornou sessão.');
 
@@ -117,19 +118,19 @@ async function main() {
     const forgedEncounter = await client.from('clinical_encounters').insert({
       organization_id: orgId, patient_id: patient.id, professional_id: professional.id,
     }).select('id').maybeSingle();
-    if (!forgedEncounter.error && forgedEncounter.data) throw new Error('RLS falhou: profissional iniciou atendimento para paciente atribuído a outro profissional.');
+    expectDeniedByPolicy(forgedEncounter, 'iniciar atendimento para paciente atribuído a outro profissional');
 
     const foreignEvolution = await client.from('clinical_evolutions').insert({
       organization_id: orgId, encounter_id: ownerEncounter.id, author_id: professional.id,
       content: 'Tentativa sintética não autorizada.',
     }).select('id').maybeSingle();
-    if (!foreignEvolution.error && foreignEvolution.data) throw new Error('RLS falhou: profissional inseriu evolução em atendimento de outro profissional.');
+    expectDeniedByPolicy(foreignEvolution, 'inserir evolução em atendimento de outro profissional', ['42501', 'P0001']);
 
     const forgedAuthor = await client.from('clinical_evolutions').insert({
       organization_id: orgId, encounter_id: professionalEncounter.id, author_id: owner.id,
       content: 'Tentativa sintética de falsificar autoria.',
     }).select('id').maybeSingle();
-    if (!forgedAuthor.error && forgedAuthor.data) throw new Error('RLS falhou: profissional criou evolução em nome de outra pessoa.');
+    expectDeniedByPolicy(forgedAuthor, 'criar evolução em nome de outra pessoa');
 
     const peerUpdate = await client.from('clinical_evolutions').update({ content: 'Tentativa de alteração cruzada.' })
       .eq('id', ownerEvolution.id).select('id');
