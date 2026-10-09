@@ -178,3 +178,6 @@ button:disabled{cursor:wait;opacity:.7}
 .module-screen> .panel ul:not(.clinical-timeline):not(.clinical-resource-list) li:last-child{border-bottom:0}
 @media(max-width:760px){.clinical-layout{grid-template-columns:1fr}.clinical-history{position:static}.clinical-timeline{grid-template-columns:1fr 1fr}.module-screen> .panel ul:not(.clinical-timeline):not(.clinical-resource-list) li{grid-template-columns:1fr}.module-screen> .panel ul:not(.clinical-timeline):not(.clinical-resource-list) li label{display:grid;grid-template-columns:auto minmax(100px,1fr);align-items:center;gap:10px}}
 @media(max-width:480px){.clinical-timeline{grid-template-columns:1fr}.clinical-section-heading{align-items:flex-start;flex-direction:column}.clinical-resource-list li{flex-direction:column}.clinical-resource-list button{width:100%}.clinical-actions>*{flex:1}}
+
+
+.clinical-readonly-note{padding:10px 12px;border-radius:10px;background:#f3f5f4;color:#526057;font-size:13px;line-height:1.5}
