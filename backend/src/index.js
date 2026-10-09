@@ -178,6 +178,7 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     if (patientError || !patient) return res.status(422).json({error:'Paciente não encontrado nesta organização.'});
     const payload = {organization_id:membership.organization_id,professional_id:professionalId,patient_id:req.body.patient_id,starts_at:new Date(req.body.starts_at).toISOString(),ends_at:new Date(req.body.ends_at).toISOString(),status:req.body.status||'scheduled',notes:req.body.notes??null};
     const {data,error} = await req.supabase.from('appointments').insert(payload).select(APPOINTMENT_FIELDS).single();
+    if (error?.code === '23P01') return res.status(409).json({error:'O profissional já possui atendimento nesse horário.'});
     if (error) return res.status(400).json({error:'Não foi possível criar o agendamento.'});
     return res.status(201).json({appointment:data});
   });
@@ -196,6 +197,7 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     }
     if (!Object.keys(patch).length) return res.status(422).json({error:'Nenhuma alteração permitida.'});
     const {data,error} = await req.supabase.from('appointments').update({...patch,updated_at:new Date().toISOString()}).eq('id',req.params.id).eq('organization_id',membership.organization_id).select(APPOINTMENT_FIELDS).single();
+    if (error?.code === '23P01') return res.status(409).json({error:'O profissional já possui atendimento nesse horário.'});
     if (error) return res.status(400).json({error:'Não foi possível atualizar o agendamento.'});
     return res.json({appointment:data});
   });
