@@ -58,7 +58,7 @@ select ok(
 );
 
 select throws_ok(
-  $update public.clinical_exercises set created_at='2999-01-01' where id='f6000000-0000-4000-8000-000000000001'$,
+  $$update public.clinical_exercises set created_at='2999-01-01' where id='f6000000-0000-4000-8000-000000000001'$$,
   'P0001', 'Clinical record creation timestamp is immutable',
   'exercise creation timestamp cannot be changed'
 );
@@ -69,7 +69,7 @@ select ok(
 );
 
 select throws_ok(
-  $update public.clinical_protocols set created_at='2999-01-01' where id='f7000000-0000-4000-8000-000000000001'$,
+  $$update public.clinical_protocols set created_at='2999-01-01' where id='f7000000-0000-4000-8000-000000000001'$$,
   'P0001', 'Clinical record creation timestamp is immutable',
   'protocol creation timestamp cannot be changed'
 );
