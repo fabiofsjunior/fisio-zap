@@ -6,24 +6,46 @@ process.env.NEXT_PUBLIC_SUPABASE_URL='http://test.local';
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY='test-anon-key';
 const {createApp}=await import('../src/index.js');
 
-function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[]}={}){
+function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[]}={}){
   const memberRows=memberships??[membership];
-  const matchingRows=filters=>memberRows.filter(row=>filters.every(([key,value])=>row[key]===value));
+  const rowsByTable={
+    organization_members:memberRows,
+    patients,
+    clinical_encounters:encounters,
+    clinical_evolutions:evolutions,
+    clinical_exercises:exercises,
+    clinical_protocols:protocols,
+    clinical_encounter_protocols:encounterProtocols,
+  };
+  const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value])=>row[key]===value));
   return {
     auth:{getUser:async token=>token==='valid'?{data:{user},error:null}:{data:{user:null},error:new Error('invalid token')}},
     from(table){
-      const state={table,values:null,filters:[]};
+      const state={table,values:null,filters:[],operation:'select',limit:null};
+      const tableRows=rowsByTable[table]??[];
+      const matching=()=>matchingRows(tableRows,state.filters);
       const api={
-        select(){return api},eq(k,v){state.filters.push([k,v]);return api},ilike(){return api},order(){return api},limit(){return api},
+        select(){return api},
+        eq(k,v){state.filters.push([k,v]);return api},
+        in(k,values){state.filters.push([k,values]);return api},
+        ilike(){return api},
+        order(){return api},
+        limit(n){state.limit=n;return api},
         maybeSingle:async()=>{
-          if(table==='organization_members')return {data:matchingRows(state.filters)[0]??null,error:null};
-          if(table==='patients')return {data:patients.find(p=>state.filters.some(([k,v])=>k==='id'&&p.id===v))??null,error:null};
-          return {data:null,error:null};
+          const rows=matching();
+          if(state.operation==='update'&&rows[0])Object.assign(rows[0],state.values);
+          if(state.operation==='delete'&&rows[0])tableRows.splice(tableRows.indexOf(rows[0]),1);
+          return {data:rows[0]??null,error:null};
         },
-        insert(v){state.values=v;return api},update(v){state.values=v;return api},delete(){return api},
+        insert(v){state.operation='insert';state.values=v;return api},
+        update(v){state.operation='update';state.values=v;return api},
+        delete(){state.operation='delete';return api},
         single:async()=>({data:state.values,error:null}),
         then(resolve){
-          const data=table==='organization_members'?matchingRows(state.filters):table==='patients'?patients:[];
+          let data=matching();
+          if(state.operation==='update')for(const row of data)Object.assign(row,state.values);
+          if(state.operation==='delete'){for(const row of data)tableRows.splice(tableRows.indexOf(row),1);data=[]}
+          if(state.limit!==null)data=data.slice(0,state.limit);
           return Promise.resolve({data,error:null}).then(resolve);
         }
       }; return api;
@@ -46,6 +68,75 @@ test('multiple memberships require an explicit authorized organization selection
     assert.equal(selected.status,200);
     const unauthorized=await request(s.baseUrl,'/encounters',{headers:{...headers,'X-FisioZap-Organization-Id':'55555555-5555-4555-8555-555555555555'}});
     assert.equal(unauthorized.status,403);
+  }finally{await s.close()}
+});
+
+test('CORS permits the organization selector header',async()=>{
+  const s=await startServer();
+  try{
+    const response=await request(s.baseUrl,'/encounters',{method:'OPTIONS',headers:{
+      Origin:'http://localhost:3000',
+      'Access-Control-Request-Method':'GET',
+      'Access-Control-Request-Headers':'x-fisiozap-organization-id',
+    }});
+    assert.equal(response.status,204);
+    assert.match(response.headers.get('access-control-allow-headers'),/X-FisioZap-Organization-Id/i);
+  }finally{await s.close()}
+});
+
+test('professionals cannot start encounters for another professional’s patient',async()=>{
+  const patient={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'55555555-5555-4555-8555-555555555555'};
+  const s=await startServer({patients:[patient]});
+  try{
+    const response=await request(s.baseUrl,'/encounters',{method:'POST',headers:{Authorization:'Bearer valid'},body:{patient_id:patient.id}});
+    assert.equal(response.status,403);
+  }finally{await s.close()}
+});
+
+test('draft evolution can be edited by its author while its encounter is open',async()=>{
+  const encounter={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',status:'in_progress'};
+  const evolution={id:'44444444-4444-4444-8444-444444444444',organization_id:encounter.organization_id,encounter_id:encounter.id,author_id:'11111111-1111-4111-8111-111111111111',content:'Rascunho anterior',status:'draft'};
+  const s=await startServer({encounters:[encounter],evolutions:[evolution]});
+  try{
+    const response=await request(s.baseUrl,'/evolutions/'+evolution.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{content:'  Revisado  '}});
+    assert.equal(response.status,200);
+    assert.equal((await response.json()).evolution.content,'Revisado');
+  }finally{await s.close()}
+});
+
+test('confirmed evolutions remain immutable through the API',async()=>{
+  const evolution={id:'44444444-4444-4444-8444-444444444444',organization_id:'22222222-2222-4222-8222-222222222222',encounter_id:'33333333-3333-4333-8333-333333333333',author_id:'11111111-1111-4111-8111-111111111111',content:'Confirmada',status:'confirmed'};
+  const s=await startServer({evolutions:[evolution]});
+  try{
+    const response=await request(s.baseUrl,'/evolutions/'+evolution.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{content:'Alteração não permitida'}});
+    assert.equal(response.status,409);
+  }finally{await s.close()}
+});
+
+test('encounter completion is rejected while a draft evolution remains',async()=>{
+  const encounter={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',status:'in_progress'};
+  const evolution={id:'44444444-4444-4444-8444-444444444444',organization_id:encounter.organization_id,encounter_id:encounter.id,author_id:'11111111-1111-4111-8111-111111111111',content:'Rascunho',status:'draft'};
+  const s=await startServer({encounters:[encounter],evolutions:[evolution]});
+  try{
+    const response=await request(s.baseUrl,'/encounters/'+encounter.id+'/complete',{method:'PATCH',headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,409);
+  }finally{await s.close()}
+});
+
+test('professional cannot read another professional’s encounter history',async()=>{
+  const encounter={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'55555555-5555-4555-8555-555555555555',status:'completed'};
+  const s=await startServer({encounters:[encounter]});
+  try{
+    const response=await request(s.baseUrl,'/encounters/'+encounter.id+'/evolutions',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,404);
+  }finally{await s.close()}
+});
+
+test('protocol association removal accepts the documented body contract',async()=>{
+  const s=await startServer();
+  try{
+    const response=await request(s.baseUrl,'/encounters/33333333-3333-4333-8333-333333333333/protocols',{method:'DELETE',headers:{Authorization:'Bearer valid'},body:{}});
+    assert.equal(response.status,422);
   }finally{await s.close()}
 });
 
