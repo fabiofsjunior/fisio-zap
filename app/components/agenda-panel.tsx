@@ -105,7 +105,7 @@ export default function AgendaPanel({ organizationId, userId }: { organizationId
           <button type="button" className="clinical-secondary" onClick={() => {
             const patient = patients.find(p => p.id === item.patient_id);
             if (!patient) { setError('Não foi possível identificar o paciente deste agendamento.'); return; }
-            setClinicalContext({ patientId: patient.id, patientName: patient.full_name, appointmentId: item.id, canStartAppointment: item.professional_id === userId });
+            setClinicalContext({ patientId: patient.id, patientName: patient.full_name, appointmentId: item.id, canStartAppointment: item.professional_id === userId && patient.professional_id === userId });
           }}>Abrir atendimento e histórico</button>
         </li>)}</ul>}
     </div>
