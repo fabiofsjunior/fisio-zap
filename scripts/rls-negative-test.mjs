@@ -28,6 +28,7 @@ async function main() {
 
   const suffix = Date.now().toString(36);
   let orgId;
+  let foreignOrgId;
   try {
     const org = await must(admin.from('organizations').insert({
       name: `RLS isolamento ${suffix}`,
@@ -51,6 +52,22 @@ async function main() {
       professional_id: owner.id,
       full_name: `Paciente RLS responsável ${suffix}`,
     }).select('id').single(), 'criar paciente isolado');
+
+    const foreignOrg = await must(admin.from('organizations').insert({
+      name: `RLS sem vínculo ${suffix}`,
+      owner_id: owner.id,
+    }).select('id').single(), 'criar segunda organização isolada');
+    foreignOrgId = foreignOrg.id;
+    await must(admin.from('organization_members').insert({
+      organization_id: foreignOrgId,
+      user_id: owner.id,
+      role: 'owner',
+    }), 'associar responsável à segunda organização');
+    const foreignPatient = await must(admin.from('patients').insert({
+      organization_id: foreignOrgId,
+      professional_id: owner.id,
+      full_name: `Paciente RLS outra organização ${suffix}`,
+    }).select('id').single(), 'criar paciente da organização sem vínculo');
     const assignedPatient = await must(admin.from('patients').insert({
       organization_id: orgId,
       professional_id: professional.id,
@@ -76,15 +93,22 @@ async function main() {
 
     const ownMembership = await must(client.from('organization_members').select('organization_id').eq('user_id', professional.id), 'ler memberships');
     if (!ownMembership.some((membership) => membership.organization_id === orgId)) throw new Error('Membership da organização de teste não foi aplicada.');
-    const foreignRead = await must(client.from('patients').select('id').eq('id', patient.id), 'testar leitura cruzada');
+    const foreignRead = await must(client.from('patients').select('id').eq('id', foreignPatient.id), 'testar leitura cruzada');
     if (foreignRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler paciente de organização sem vínculo.');
 
-    const foreignUpdate = await client.from('patients').update({ notes: 'bloqueio RLS' }).eq('id', patient.id).select('id');
+    const foreignUpdate = await client.from('patients').update({ notes: 'bloqueio RLS' }).eq('id', foreignPatient.id).select('id');
     if (foreignUpdate.error) throw new Error(`RLS update retornou erro inesperado: ${foreignUpdate.error.message}`);
     if (foreignUpdate.data.length !== 0) throw new Error('RLS falhou: profissional conseguiu alterar paciente de organização sem vínculo.');
 
     const sameOrgPatient = await must(client.from('patients').select('id').eq('id', assignedPatient.id), 'ler paciente atribuído ao profissional');
     if (sameOrgPatient.length !== 1) throw new Error('RLS bloqueou o paciente atribuído ao profissional.');
+    const ownEncounter = await must(client.from('clinical_encounters').insert({
+      organization_id: orgId, patient_id: assignedPatient.id, professional_id: professional.id,
+    }).select('id').single(), 'iniciar atendimento para paciente próprio');
+    const ownEvolution = await must(client.from('clinical_evolutions').insert({
+      organization_id: orgId, encounter_id: ownEncounter.id, author_id: professional.id,
+      content: 'Rascunho sintético autorizado.',
+    }).select('id').single(), 'registrar rascunho próprio');
     const peerEncounter = await must(client.from('clinical_encounters').select('id').eq('id', ownerEncounter.id), 'ler atendimento de outro profissional');
     if (peerEncounter.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler atendimento de outro profissional na mesma organização.');
     const peerEvolution = await must(client.from('clinical_evolutions').select('id').eq('id', ownerEvolution.id), 'ler evolução de outro profissional');
@@ -112,7 +136,7 @@ async function main() {
     if (peerUpdate.error) throw new Error(`RLS update clínico retornou erro inesperado: ${peerUpdate.error.message}`);
     if (peerUpdate.data.length !== 0) throw new Error('RLS falhou: profissional alterou evolução de outro profissional.');
 
-    const draftDelete = await client.from('clinical_evolutions').delete().eq('id', professionalEvolution.id).select('id').maybeSingle();
+    const draftDelete = await client.from('clinical_evolutions').delete().eq('id', ownEvolution.id).select('id').maybeSingle();
     if (draftDelete.error || !draftDelete.data) throw new Error(`Trigger falhou ao excluir rascunho permitido: ${draftDelete.error?.message || 'nenhum registro removido'}`);
 
     await client.auth.signOut({ scope: 'local' });
@@ -124,14 +148,20 @@ async function main() {
     console.log('Criação para paciente de colega e autoria forjada: BLOQUEADAS');
     console.log('Exclusão de rascunho próprio: PERMITIDA');
   } finally {
-    if (orgId) {
-      await admin.from('clinical_encounter_protocols').delete().eq('organization_id', orgId);
-      await admin.from('clinical_exercises').delete().eq('organization_id', orgId);
-      await admin.from('clinical_evolutions').delete().eq('organization_id', orgId);
-      await admin.from('clinical_encounters').delete().eq('organization_id', orgId);
-      await admin.from('clinical_protocols').delete().eq('organization_id', orgId);
-      await admin.from('patients').delete().eq('organization_id', orgId);
-      await admin.from('organizations').delete().eq('id', orgId);
+    for (const cleanupOrgId of [orgId, foreignOrgId].filter(Boolean)) {
+      const cleanupSteps = [
+        ['clinical_encounter_protocols', admin.from('clinical_encounter_protocols').delete().eq('organization_id', cleanupOrgId)],
+        ['clinical_exercises', admin.from('clinical_exercises').delete().eq('organization_id', cleanupOrgId)],
+        ['clinical_evolutions', admin.from('clinical_evolutions').delete().eq('organization_id', cleanupOrgId)],
+        ['clinical_encounters', admin.from('clinical_encounters').delete().eq('organization_id', cleanupOrgId)],
+        ['clinical_protocols', admin.from('clinical_protocols').delete().eq('organization_id', cleanupOrgId)],
+        ['patients', admin.from('patients').delete().eq('organization_id', cleanupOrgId)],
+        ['organizations', admin.from('organizations').delete().eq('id', cleanupOrgId)],
+      ];
+      for (const [table, query] of cleanupSteps) {
+        const { error } = await query;
+        if (error) throw new Error(`Falha ao limpar dados RLS sintéticos em ${table}: ${error.message}`);
+      }
     }
   }
 }
