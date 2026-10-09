@@ -146,7 +146,7 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     if (!partial || body.patient_id !== undefined) if (!isUuid(body.patient_id)) errors.patient_id = 'Paciente inválido.';
     if (body.professional_id !== undefined && !isUuid(body.professional_id)) errors.professional_id = 'Profissional inválido.';
     for (const field of ['starts_at','ends_at']) if (!partial || body[field] !== undefined) {
-      if (typeof body[field] !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}T/.test(body[field]) || !/(Z|[+-]\\d{2}:\\d{2})$/.test(body[field]) || !Number.isFinite(Date.parse(body[field]))) errors[field] = 'Data/hora com fuso obrigatório.';
+      if (typeof body[field] !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(body[field]) || !/(Z|[+-]\d{2}:\d{2})$/.test(body[field]) || !Number.isFinite(Date.parse(body[field]))) errors[field] = 'Data/hora com fuso obrigatório.';
     }
     if (body.status !== undefined && !APPOINTMENT_STATUSES.has(body.status)) errors.status = 'Status inválido.';
     if (body.notes !== undefined && body.notes !== null && (typeof body.notes !== 'string' || body.notes.length > 4000)) errors.notes = 'Observação inválida.';
