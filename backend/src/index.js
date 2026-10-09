@@ -210,6 +210,106 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     return res.status(204).send();
   });
 
+
+  // S4.2: clinical encounters. Organization is always resolved from the session.
+  const ENCOUNTER_FIELDS = 'id,organization_id,patient_id,professional_id,appointment_id,status,started_at,completed_at,created_at,updated_at';
+  const EVOLUTION_FIELDS = 'id,organization_id,encounter_id,author_id,content,status,confirmed_at,created_at,updated_at';
+  async function getScopedEncounter(req, membership, id) {
+    if (!isUuid(id)) return null;
+    const { data, error } = await req.supabase.from('clinical_encounters')
+      .select(ENCOUNTER_FIELDS).eq('id', id).eq('organization_id', membership.organization_id).maybeSingle();
+    return error ? null : data;
+  }
+  app.get('/encounters', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req,res); if (!membership) return;
+    if (req.query.patient_id && !isUuid(req.query.patient_id)) return res.status(422).json({error:'Paciente inválido.'});
+    let query = req.supabase.from('clinical_encounters').select(ENCOUNTER_FIELDS)
+      .eq('organization_id', membership.organization_id).order('started_at',{ascending:false}).limit(100);
+    if (req.query.patient_id) query=query.eq('patient_id',req.query.patient_id);
+    const {data,error}=await query;
+    if (error) return res.status(400).json({error:'Não foi possível consultar os atendimentos.'});
+    return res.json({encounters:data??[]});
+  });
+  app.post('/encounters', rateLimit, requireAuth, async (req,res) => {
+    const membership=await appointmentScope(req,res); if (!membership) return;
+    const {patient_id,appointment_id}=req.body??{};
+    if (!isUuid(patient_id) || (appointment_id!==undefined && appointment_id!==null && !isUuid(appointment_id)))
+      return res.status(422).json({error:'Paciente ou agendamento inválido.'});
+    const {data:patient,error:patientError}=await req.supabase.from('patients').select('id,professional_id')
+      .eq('id',patient_id).eq('organization_id',membership.organization_id).maybeSingle();
+    if (patientError || !patient) return res.status(404).json({error:'Paciente não encontrado.'});
+    const professional_id=req.user.id;
+    if (!(await verifyProfessionalMembership(req.supabase,membership.organization_id,professional_id)))
+      return res.status(403).json({error:'Profissional sem autorização.'});
+    if (appointment_id) {
+      const {data:appointment,error}=await req.supabase.from('appointments').select('id')
+        .eq('id',appointment_id).eq('organization_id',membership.organization_id)
+        .eq('patient_id',patient_id).eq('professional_id',professional_id).maybeSingle();
+      if (error || !appointment) return res.status(422).json({error:'Agendamento incompatível.'});
+    }
+    const {data,error}=await req.supabase.from('clinical_encounters').insert({
+      organization_id:membership.organization_id,patient_id,professional_id,appointment_id:appointment_id??null
+    }).select(ENCOUNTER_FIELDS).single();
+    if (error?.code==='23505') return res.status(409).json({error:'Agendamento já possui atendimento.'});
+    if (error) return res.status(400).json({error:'Não foi possível iniciar o atendimento.'});
+    return res.status(201).json({encounter:data});
+  });
+  app.patch('/encounters/:id/complete',rateLimit,requireAuth,async(req,res)=>{
+    const membership=await appointmentScope(req,res);if(!membership)return;
+    const encounter=await getScopedEncounter(req,membership,req.params.id);
+    if(!encounter)return res.status(404).json({error:'Atendimento não encontrado.'});
+    if(encounter.professional_id!==req.user.id)return res.status(403).json({error:'Profissional não autorizado.'});
+    if(encounter.status!=='in_progress')return res.status(409).json({error:'Atendimento já finalizado.'});
+    const {data,error}=await req.supabase.from('clinical_encounters').update({
+      status:'completed',completed_at:new Date().toISOString(),updated_at:new Date().toISOString()
+    }).eq('id',encounter.id).eq('organization_id',membership.organization_id)
+      .eq('status','in_progress').select(ENCOUNTER_FIELDS).maybeSingle();
+    if(error)return res.status(400).json({error:'Não foi possível finalizar o atendimento.'});
+    if(!data)return res.status(409).json({error:'Atendimento alterado simultaneamente.'});
+    return res.json({encounter:data});
+  });
+  app.get('/encounters/:id/evolutions',rateLimit,requireAuth,async(req,res)=>{
+    const membership=await appointmentScope(req,res);if(!membership)return;
+    const encounter=await getScopedEncounter(req,membership,req.params.id);
+    if(!encounter)return res.status(404).json({error:'Atendimento não encontrado.'});
+    const {data,error}=await req.supabase.from('clinical_evolutions').select(EVOLUTION_FIELDS)
+      .eq('organization_id',membership.organization_id).eq('encounter_id',encounter.id)
+      .order('created_at',{ascending:true}).limit(100);
+    if(error)return res.status(400).json({error:'Não foi possível consultar as evoluções.'});
+    return res.json({evolutions:data??[]});
+  });
+  app.post('/encounters/:id/evolutions',rateLimit,requireAuth,async(req,res)=>{
+    const membership=await appointmentScope(req,res);if(!membership)return;
+    const encounter=await getScopedEncounter(req,membership,req.params.id);
+    if(!encounter)return res.status(404).json({error:'Atendimento não encontrado.'});
+    if(encounter.professional_id!==req.user.id)return res.status(403).json({error:'Profissional não autorizado.'});
+    if(encounter.status!=='in_progress')return res.status(409).json({error:'Atendimento finalizado.'});
+    const content=req.body?.content;
+    if(typeof content!=='string'||content.trim().length<1||content.length>10000)
+      return res.status(422).json({error:'Evolução deve conter entre 1 e 10000 caracteres.'});
+    const {data,error}=await req.supabase.from('clinical_evolutions').insert({
+      organization_id:membership.organization_id,encounter_id:encounter.id,author_id:req.user.id,content:content.trim()
+    }).select(EVOLUTION_FIELDS).single();
+    if(error)return res.status(400).json({error:'Não foi possível salvar a evolução.'});
+    return res.status(201).json({evolution:data});
+  });
+  app.patch('/evolutions/:id/confirm',rateLimit,requireAuth,async(req,res)=>{
+    const membership=await appointmentScope(req,res);if(!membership)return;
+    if(!isUuid(req.params.id))return res.status(400).json({error:'Evolução inválida.'});
+    const {data:existing,error:lookupError}=await req.supabase.from('clinical_evolutions')
+      .select(EVOLUTION_FIELDS).eq('id',req.params.id).eq('organization_id',membership.organization_id).maybeSingle();
+    if(lookupError||!existing)return res.status(404).json({error:'Evolução não encontrada.'});
+    if(existing.author_id!==req.user.id)return res.status(403).json({error:'Autor não autorizado.'});
+    if(existing.status!=='draft')return res.status(409).json({error:'Evolução já confirmada.'});
+    const {data,error}=await req.supabase.from('clinical_evolutions').update({
+      status:'confirmed',confirmed_at:new Date().toISOString(),updated_at:new Date().toISOString()
+    }).eq('id',existing.id).eq('organization_id',membership.organization_id)
+      .eq('status','draft').select(EVOLUTION_FIELDS).maybeSingle();
+    if(error)return res.status(400).json({error:'Não foi possível confirmar a evolução.'});
+    if(!data)return res.status(409).json({error:'Evolução alterada simultaneamente.'});
+    return res.json({evolution:data});
+  });
+
   app.post('/chat', rateLimit, requireAuth, (req, res) => {
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     if (!message) return res.status(400).json({ error: 'A mensagem é obrigatória.' });
