@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createBrowserClient } from '@supabase/ssr';
 import ClinicalPanel from '@/app/components/clinical-panel';
+import { getLocalDayRange } from '@/app/lib/agenda-date-range.mjs';
 
 type Appointment = { id: string; patient_id: string; professional_id: string; starts_at: string; ends_at: string; status: string };
 type Patient = { id: string; full_name: string; professional_id: string };
@@ -44,8 +45,7 @@ export default function AgendaPanel({ organizationId, userId, canManageClinicalR
     setLoading(true);
     setError('');
     try {
-      const from = new Date(day + 'T00:00:00');
-      const to = new Date(from.getTime() + 86400000);
+      const { from, to } = getLocalDayRange(day);
       const [a, p] = await Promise.all([
         callApi(organizationId, '/appointments?from=' + encodeURIComponent(from.toISOString()) + '&to=' + encodeURIComponent(to.toISOString())),
         callApi(organizationId, '/patients'),
