@@ -58,6 +58,13 @@ declare
 begin
  if tg_op='DELETE' then
   if old.status='confirmed' then raise exception 'Confirmed clinical evolution is immutable'; end if;
+  select ce.status into encounter_status
+  from public.clinical_encounters ce
+  where ce.organization_id=old.organization_id and ce.id=old.encounter_id
+  for update;
+  if encounter_status is distinct from 'in_progress' then
+   raise exception 'Clinical evolutions require an in-progress encounter';
+  end if;
   return old;
  end if;
  if tg_op='INSERT' then
@@ -96,6 +103,28 @@ $s4$;
 revoke all on function public.s4_prevent_confirmed_evolution_edit() from public, anon, authenticated;
 create trigger s4_evolution_immutable before insert or update or delete on public.clinical_evolutions
  for each row execute function public.s4_prevent_confirmed_evolution_edit();
+
+create or replace function public.s4_validate_encounter_completion()
+returns trigger
+language plpgsql
+set search_path = ''
+as $s4$
+begin
+ if old.status='in_progress' and new.status='completed' and exists (
+  select 1 from public.clinical_evolutions e
+  where e.organization_id=new.organization_id
+   and e.encounter_id=new.id
+   and e.status='draft'
+ ) then
+  raise exception 'Confirm or delete draft evolutions before completing the encounter';
+ end if;
+ return new;
+end
+$s4$;
+revoke all on function public.s4_validate_encounter_completion() from public, anon, authenticated;
+create trigger s4_encounter_completion_check before update of status on public.clinical_encounters
+ for each row execute function public.s4_validate_encounter_completion();
+
 create table public.clinical_exercises (
  id uuid primary key default gen_random_uuid(),
  organization_id uuid not null,
