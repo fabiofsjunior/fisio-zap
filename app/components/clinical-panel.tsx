@@ -72,6 +72,7 @@ export default function ClinicalPanel({
   const [availableProtocols, setAvailableProtocols] = useState<Protocol[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailsForEncounterId, setDetailsForEncounterId] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -86,6 +87,7 @@ export default function ClinicalPanel({
   const clearEncounterDetails = useCallback(() => {
     detailRequestId.current += 1;
     setDetailLoading(false);
+    setDetailsForEncounterId('');
     setEvolutions([]);
     setExercises([]);
     setProtocols([]);
@@ -97,6 +99,7 @@ export default function ClinicalPanel({
 
   const loadEncounterDetails = useCallback(async (id: string) => {
     const requestId = ++detailRequestId.current;
+    setDetailsForEncounterId('');
     setDetailLoading(true);
     setError('');
     try {
@@ -111,6 +114,7 @@ export default function ClinicalPanel({
       setExercises(exerciseData.exercises || []);
       setProtocols(linkedProtocolData.protocols || []);
       setAvailableProtocols(protocolData.protocols || []);
+      setDetailsForEncounterId(id);
     } catch (cause) {
       if (requestId === detailRequestId.current) setError(cause instanceof Error ? cause.message : 'Falha ao carregar o atendimento.');
     } finally {
@@ -384,7 +388,7 @@ export default function ClinicalPanel({
         {historyLoading ? <p role="status">Carregando histórico…</p> : encounters.length === 0
           ? <p>Nenhum atendimento registrado.</p>
           : <ul className="clinical-timeline">{encounters.map(item => <li key={item.id}>
-            <button type="button" className={item.id === encounterId ? 'clinical-timeline-item selected' : 'clinical-timeline-item'} onClick={() => { clearEncounterDetails(); setEncounterId(item.id); }}>
+            <button type="button" className={item.id === encounterId ? 'clinical-timeline-item selected' : 'clinical-timeline-item'} onClick={() => { if (item.id !== encounterId) { clearEncounterDetails(); setEncounterId(item.id); } }}>
               <strong>{new Date(item.started_at).toLocaleString('pt-BR')}</strong>
               <span>{item.status === 'in_progress' ? 'Em andamento' : 'Finalizado'}</span>
             </button>
@@ -398,6 +402,10 @@ export default function ClinicalPanel({
       <div className="clinical-record">
         {!encounterId ? <div className="panel clinical-empty"><h3>Selecione um atendimento</h3><p>Abra um item do histórico ou inicie um atendimento para registrar a evolução.</p></div>
           : detailLoading ? <div className="panel" role="status">Carregando prontuário…</div>
+          : selectedEncounter && detailsForEncounterId !== encounterId ? <div className="panel" role={error ? 'alert' : 'status'}>
+            <p>{error ? 'Não foi possível carregar os dados deste atendimento.' : 'Carregando prontuário…'}</p>
+            {error && <button type="button" className="clinical-secondary" onClick={() => void loadEncounterDetails(encounterId)}>Tentar novamente</button>}
+          </div>
           : selectedEncounter ? <div className="panel">
             <div className="clinical-section-heading"><div><span className="eyebrow">ATENDIMENTO</span><h3>{patientName}</h3><p>{new Date(selectedEncounter.started_at).toLocaleString('pt-BR')} · {selectedEncounter.status === 'in_progress' ? 'Em andamento' : 'Finalizado'}</p></div>
               {selectedEncounter.status === 'in_progress' && canWriteEncounter && <button type="button" className="clinical-secondary" onClick={() => void completeEncounter()} disabled={saving || drafts.length > 0} title={drafts.length ? 'Confirme os rascunhos antes de finalizar.' : undefined}>{saving ? 'Salvando…' : 'Finalizar atendimento'}</button>}
