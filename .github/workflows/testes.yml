@@ -52,6 +52,8 @@ jobs:
         run: supabase db reset --local --no-seed
       - name: Lint local schema
         run: supabase db lint --local --fail-on error --schema public
+      - name: Run pgTAP clinical trigger tests
+        run: supabase test db --local
 
   rls:
     runs-on: ubuntu-latest
