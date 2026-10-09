@@ -32,6 +32,8 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
         order(){return api},
         limit(n){state.limit=n;return api},
         maybeSingle:async()=>{
+          const operationError=operationErrors[state.table]?.[state.operation];
+          if(operationError)return {data:null,error:operationError};
           const rows=matching();
           if(state.operation==='update'&&rows[0])Object.assign(rows[0],state.values);
           if(state.operation==='delete'&&rows[0])tableRows.splice(tableRows.indexOf(rows[0]),1);
