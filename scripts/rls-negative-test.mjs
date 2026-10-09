@@ -100,6 +100,12 @@ async function main() {
     const professionalEncounter = await must(admin.from('clinical_encounters').insert({
       organization_id: orgId, patient_id: assignedPatient.id, professional_id: professional.id,
     }).select('id').single(), 'criar atendimento sintético do profissional');
+    const ownerExercise = await must(admin.from('clinical_exercises').insert({
+      organization_id: orgId, encounter_id: ownerEncounter.id, title: 'Exercício sintético de colega',
+    }).select('id').single(), 'criar exercício sintético de outro profissional');
+    await must(admin.from('clinical_encounter_protocols').insert({
+      organization_id: orgId, encounter_id: ownerEncounter.id, protocol_id: protocol.id,
+    }), 'associar protocolo sintético ao atendimento de outro profissional');
     const ownerEvolution = await must(admin.from('clinical_evolutions').insert({
       organization_id: orgId, encounter_id: ownerEncounter.id, author_id: owner.id,
       content: 'Registro sintético de isolamento RLS.',
@@ -134,6 +140,15 @@ async function main() {
     const ownExercise = await must(client.from('clinical_exercises').insert({
       organization_id: orgId, encounter_id: ownEncounter.id, title: 'Exercício próprio sintético',
     }).select('id').single(), 'associar exercício ao próprio atendimento');
+    const peerExerciseRead = await must(client.from('clinical_exercises').select('id').eq('id', ownerExercise.id), 'ler exercício de outro profissional');
+    if (peerExerciseRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler exercício de outro profissional na mesma organização.');
+    const peerExerciseUpdate = await client.from('clinical_exercises').update({ title: 'Tentativa de alteração' })
+      .eq('id', ownerExercise.id).select('id');
+    if (peerExerciseUpdate.error) throw new Error(`RLS update de exercício retornou erro inesperado: ${peerExerciseUpdate.error.message}`);
+    if ((peerExerciseUpdate.data ?? []).length) throw new Error('RLS falhou: profissional alterou exercício de outro profissional.');
+    const peerExerciseDelete = await client.from('clinical_exercises').delete().eq('id', ownerExercise.id).select('id');
+    if (peerExerciseDelete.error) throw new Error(`RLS delete de exercício retornou erro inesperado: ${peerExerciseDelete.error.message}`);
+    if ((peerExerciseDelete.data ?? []).length) throw new Error('RLS falhou: profissional excluiu exercício de outro profissional.');
     const ownExerciseUpdate = await client.from('clinical_exercises').update({ title: 'Exercício próprio atualizado' })
       .eq('id', ownExercise.id).select('id').maybeSingle();
     if (ownExerciseUpdate.error || !ownExerciseUpdate.data) throw new Error(`Profissional não conseguiu atualizar exercício próprio: ${ownExerciseUpdate.error?.message || 'nenhum registro alterado'}`);
@@ -159,10 +174,22 @@ async function main() {
       organization_id: orgId, encounter_id: ownEncounter.id, protocol_id: protocol.id,
     }).select().single(), 'vincular protocolo ao próprio atendimento');
     if (!ownProtocolLink) throw new Error('Falha ao criar vínculo autorizado do protocolo.');
+    const peerProtocolLinkRead = await must(client.from('clinical_encounter_protocols').select('protocol_id')
+      .eq('encounter_id', ownerEncounter.id), 'ler vínculo clínico de outro profissional');
+    if (peerProtocolLinkRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler vínculo de atendimento de outro profissional.');
     const peerProtocolLink = await client.from('clinical_encounter_protocols').insert({
       organization_id: orgId, encounter_id: ownerEncounter.id, protocol_id: protocol.id,
     }).select().maybeSingle();
     expectDeniedByPolicy(peerProtocolLink, 'associar protocolo a atendimento de outro profissional');
+    const peerProtocolLinkDelete = await client.from('clinical_encounter_protocols').delete()
+      .eq('organization_id', orgId).eq('encounter_id', ownerEncounter.id).eq('protocol_id', protocol.id).select();
+    if (peerProtocolLinkDelete.error) throw new Error(`RLS delete de vínculo retornou erro inesperado: ${peerProtocolLinkDelete.error.message}`);
+    if ((peerProtocolLinkDelete.data ?? []).length) throw new Error('RLS falhou: profissional excluiu vínculo do atendimento de outro profissional.');
+    const ownProtocolLinkDelete = await client.from('clinical_encounter_protocols').delete()
+      .eq('organization_id', orgId).eq('encounter_id', ownEncounter.id).eq('protocol_id', protocol.id).select();
+    if (ownProtocolLinkDelete.error || ownProtocolLinkDelete.data?.length !== 1) {
+      throw new Error(`RLS bloqueou a exclusão do vínculo próprio: ${ownProtocolLinkDelete.error?.message || 'nenhum registro removido'}`);
+    }
     const foreignProtocolLink = await client.from('clinical_encounter_protocols').insert({
       organization_id: orgId, encounter_id: ownEncounter.id, protocol_id: foreignProtocol.id,
     }).select().maybeSingle();
