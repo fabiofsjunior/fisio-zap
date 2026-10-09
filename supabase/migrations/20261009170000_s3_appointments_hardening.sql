@@ -28,6 +28,7 @@ create index if not exists appointments_professional_interval_idx
 
 -- Keep existing appointments, but replace generic policies with explicit ownership rules.
 alter table public.appointments enable row level security;
+drop policy if exists "appointments_scoped_access" on public.appointments;
 drop policy if exists "s15_select" on public.appointments;
 drop policy if exists "s15_insert" on public.appointments;
 drop policy if exists "s15_update" on public.appointments;
