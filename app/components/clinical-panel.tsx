@@ -47,6 +47,7 @@ export default function ClinicalPanel({
   organizationId,
   userId,
   canStartAppointment,
+  canManageClinicalRecords = false,
   patientId: initialPatientId,
   patientName: initialPatientName,
   appointmentId,
@@ -56,6 +57,7 @@ export default function ClinicalPanel({
   organizationId: string;
   userId: string;
   canStartAppointment?: boolean;
+  canManageClinicalRecords?: boolean;
   patientId?: string;
   patientName?: string;
   appointmentId?: string;
@@ -203,6 +205,7 @@ export default function ClinicalPanel({
         body: JSON.stringify({ patient_id: patientId, appointment_id: appointmentId || null }),
       });
       clearEncounterDetails();
+      setEncounters(current => [result.encounter, ...current.filter(item => item.id !== result.encounter.id)]);
       setEncounterId(result.encounter.id);
       await refreshHistory();
       setNotice('Atendimento iniciado. As informações ainda não confirmadas podem ser revisadas.');
@@ -359,7 +362,7 @@ export default function ClinicalPanel({
 
   const patientName = initialPatientName || patients.find(item => item.id === patientId)?.full_name || 'Paciente';
   const selectedPatient = patients.find(item => item.id === patientId);
-  const canStartEncounter = appointmentId ? canStartAppointment === true : selectedPatient?.professional_id === userId;
+  const canStartEncounter = appointmentId ? canStartAppointment === true : (canManageClinicalRecords || selectedPatient?.professional_id === userId);
   const canWriteEncounter = selectedEncounter?.professional_id === userId;
   const linkedProtocolIds = new Set(protocols.map(item => item.id));
   const unlinkedProtocols = availableProtocols.filter(item => !linkedProtocolIds.has(item.id));
@@ -396,7 +399,7 @@ export default function ClinicalPanel({
         {!encounterId && canStartEncounter && <button type="button" className="clinical-primary" onClick={() => void startEncounter()} disabled={saving || historyLoading}>
           {saving ? 'Iniciando…' : appointmentId ? 'Iniciar atendimento deste agendamento' : 'Iniciar novo atendimento'}
         </button>}
-        {!encounterId && !canStartEncounter && <p className="clinical-readonly-note">Somente o profissional responsável pode iniciar este atendimento.</p>}
+        {!encounterId && !canStartEncounter && <p className="clinical-readonly-note">Sem permissão para iniciar este atendimento.</p>}
       </aside>
 
       <div className="clinical-record">
