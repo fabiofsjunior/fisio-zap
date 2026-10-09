@@ -1,5 +1,11 @@
 begin;
-select plan(14);
+select plan(15);
+select is(
+  (select count(*)::integer from pg_constraint where conrelid = 'public.patients'::regclass and conname = 'patients_s4_org_id_unique'),
+  1,
+  'patients has the organization-scoped key required by clinical encounters'
+);
+
 
 insert into auth.users (
   id, aud, role, email, encrypted_password, email_confirmed_at,
