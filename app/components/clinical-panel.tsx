@@ -189,7 +189,7 @@ export default function ClinicalPanel({
   }
 
   async function startEncounter() {
-    if (!patientId || saving) return;
+    if (!patientId || !canStartEncounter || saving) return;
     setSaving(true);
     setError('');
     setNotice('');
@@ -413,7 +413,7 @@ export default function ClinicalPanel({
                   <button type="button" className="clinical-secondary" onClick={() => editEvolution(item)} disabled={saving}>Editar rascunho</button>
                   <button type="button" className="clinical-primary" onClick={() => setReviewEvolutionId(item.id)} disabled={saving}>Revisar e confirmar</button>
                 </div>}
-                {reviewEvolutionId === item.id && <div className="clinical-review" role="group" aria-label="Revisão da evolução">
+                {reviewEvolutionId === item.id && item.status === 'draft' && selectedEncounter.status === 'in_progress' && canWriteEncounter && item.author_id === userId && <div className="clinical-review" role="group" aria-label="Revisão da evolução">
                   <strong>Confirme que revisou este registro</strong><p>{item.content}</p>
                   <div className="clinical-actions"><button type="button" className="clinical-primary" onClick={() => void confirmEvolution(item.id)} disabled={saving}>{saving ? 'Confirmando…' : 'Confirmar evolução'}</button><button type="button" className="clinical-secondary" onClick={() => setReviewEvolutionId('')} disabled={saving}>Voltar</button></div>
                 </div>}
