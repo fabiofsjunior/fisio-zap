@@ -7,7 +7,7 @@ process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY='test-anon-key';
 const {createApp}=await import('../src/index.js');
 
 function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],operationErrors={}}={}){
-  const memberRows=memberships??[membership];
+  const memberRows=(memberships??[membership]).map(row=>({...row,user_id:row.user_id??user.id}));
   const rowsByTable={
     organization_members:memberRows,
     patients,
