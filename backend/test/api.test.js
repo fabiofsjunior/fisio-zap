@@ -36,3 +36,31 @@ test('appointments require authentication',async()=>{const s=await startServer()
 test('appointment creation validates patient and timezone',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/appointments',{method:'POST',headers:{Authorization:'Bearer valid'},body:{patient_id:'invalid',starts_at:'2026-10-10T09:00:00',ends_at:'2026-10-10T08:00:00Z'}});assert.equal(r.status,422);await s.close()});
 test('appointment update rejects invalid id',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/appointments/not-a-uuid',{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{status:'confirmed'}});assert.equal(r.status,400);await s.close()});
 test('appointment listing rejects invalid status',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/appointments?status=unknown',{headers:{Authorization:'Bearer valid'}});assert.equal(r.status,422);await s.close()});
+
+test('appointment conflict returns HTTP 409',async()=>{
+  const user={id:'11111111-1111-4111-8111-111111111111'};
+  const membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'};
+  const patientId='33333333-3333-4333-8333-333333333333';
+  const factory=()=>({
+    auth:{getUser:async()=>({data:{user},error:null})},
+    from(table){
+      const api={
+        select(){return api},eq(){return api},order(){return api},limit(){return api},
+        maybeSingle:async()=>({data:table==='organization_members'?membership:{id:patientId},error:null}),
+        insert(){return api},
+        single:async()=>({data:null,error:{code:'23P01'}}),
+      };
+      return api;
+    }
+  });
+  const app=createApp({supabaseClientFactory:factory});
+  const server=http.createServer(app);
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const baseUrl='http://127.0.0.1:'+server.address().port;
+  try {
+    const response=await request(baseUrl,'/appointments',{method:'POST',headers:{Authorization:'Bearer valid'},body:{
+      patient_id:patientId,starts_at:'2026-10-12T13:00:00Z',ends_at:'2026-10-12T14:00:00Z'
+    }});
+    assert.equal(response.status,409);
+  }finally{server.close();server.closeAllConnections?.();}
+});
