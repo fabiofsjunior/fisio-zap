@@ -8,6 +8,7 @@ const {createApp}=await import('../src/index.js');
 
 function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],operationErrors={}}={}){
   const memberRows=(memberships??[membership]).map(row=>({...row,user_id:row.user_id??user.id}));
+  const calls=[];
   const rowsByTable={
     organization_members:memberRows,
     patients,
@@ -22,8 +23,10 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
   };
   const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):operator==='gte'?Date.parse(row[key])>=Date.parse(value):operator==='lt'?Date.parse(row[key])<Date.parse(value):row[key]===value));
   return {
+    calls,
     auth:{getUser:async token=>token==='valid'?{data:{user},error:null}:{data:{user:null},error:new Error('invalid token')}},
     from(table){
+      calls.push(table);
       const state={table,values:null,filters:[],operation:'select',limit:null,range:null,orderBy:[]};
       const tableRows=rowsByTable[table]??[];
       const matching=()=>matchingRows(tableRows,state.filters);
@@ -69,7 +72,7 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
     }
   };
 }
-function startServer(options={},supabaseClientFactory=null){const database=mock(options);const app=createApp({supabaseClientFactory:supabaseClientFactory??(()=>database)});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,close:()=>{server.close();server.closeAllConnections?.()}})))}
+function startServer(options={},supabaseClientFactory=null,now=()=>new Date()){const database=mock(options);const app=createApp({supabaseClientFactory:supabaseClientFactory??(()=>database),now});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,database,close:()=>{server.close();server.closeAllConnections?.()}})))}
 async function request(baseUrl,path,options={}){return fetch(baseUrl+path,{...options,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...(options.headers||{})},body:options.body?JSON.stringify(options.body):undefined})}
 
 test('authenticated Supabase data client forwards the verified JWT for RLS',async()=>{
@@ -399,6 +402,148 @@ test('financial payment changes are scoped and repeated state updates are idempo
 
 test('health remains public',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/health');assert.equal(r.status,200);await s.close()});
 test('chat remains authenticated',async()=>{const s=await startServer();assert.equal((await request(s.baseUrl,'/chat',{method:'POST',body:{message:'olá'}})).status,401);await s.close()});
+test('chat rejects authenticated users without membership before reading operational data',async()=>{
+  const s=await startServer({memberships:[]});
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{Authorization:'Bearer valid'},body:{message:'Agenda de hoje'}});
+    assert.equal(response.status,403);
+    assert.deepEqual(s.database.calls,['organization_members']);
+  }finally{await s.close()}
+});
+test('chat returns a read-only local-day summary scoped to the current professional',async()=>{
+  const ownMorning={id:'80000000-0000-4000-8000-000000000001',organization_id:financeOrg,professional_id:financeUser,patient_id:'90000000-0000-4000-8000-000000000001',starts_at:'2026-10-10T12:00:00.000Z',status:'confirmed',notes:'Dado clínico privado'};
+  const ownAfternoon={id:'80000000-0000-4000-8000-000000000002',organization_id:financeOrg,professional_id:financeUser,patient_id:'90000000-0000-4000-8000-000000000002',starts_at:'2026-10-10T17:30:00.000Z',status:'scheduled',notes:'Outro dado clínico'};
+  const peer={...ownMorning,id:'80000000-0000-4000-8000-000000000003',professional_id:financePeer,starts_at:'2026-10-10T13:00:00.000Z'};
+  const foreign={...ownMorning,id:'80000000-0000-4000-8000-000000000004',organization_id:financeForeignOrg,starts_at:'2026-10-10T14:00:00.000Z'};
+  const cancelled={...ownMorning,id:'80000000-0000-4000-8000-000000000005',status:'cancelled',starts_at:'2026-10-10T15:00:00.000Z'};
+  const atEndBoundary={...ownMorning,id:'80000000-0000-4000-8000-000000000006',starts_at:'2026-10-11T03:00:00.000Z'};
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'},appointments:[ownMorning,ownAfternoon,peer,foreign,cancelled,atEndBoundary]},null,()=>new Date('2026-10-10T15:00:00.000Z'));
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{
+      message:'O que tenho hoje?',timezone:'America/Sao_Paulo',today_range:{from:'2026-10-10T03:00:00.000Z',to:'2026-10-11T03:00:00.000Z'},
+    }});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.mode,'read_only');
+    assert.equal(body.intent,'agenda_today');
+    assert.equal(body.message,'Você tem 2 atendimentos previstos para hoje. Às 09:00, 14:30.');
+    assert.doesNotMatch(body.message,/80000000|90000000|privado|paciente/i);
+    assert.deepEqual(s.database.calls,['organization_members','appointments']);
+  }finally{await s.close()}
+});
+test('chat counts only the current user’s open manual tasks without returning their content',async()=>{
+  const notifications=[
+    {id:'81000000-0000-4000-8000-000000000001',organization_id:financeOrg,user_id:financeUser,action_type:'manual_task',status:'unread',title:'Paciente Ana',message:'Conteúdo clínico privado'},
+    {id:'81000000-0000-4000-8000-000000000002',organization_id:financeOrg,user_id:financeUser,action_type:'manual_task',status:'read',title:'Retorno',message:'Detalhe privado'},
+    {id:'81000000-0000-4000-8000-000000000003',organization_id:financeOrg,user_id:financeUser,action_type:'manual_task',status:'completed'},
+    {id:'81000000-0000-4000-8000-000000000004',organization_id:financeOrg,user_id:financePeer,action_type:'manual_task',status:'unread'},
+    {id:'81000000-0000-4000-8000-000000000005',organization_id:financeForeignOrg,user_id:financeUser,action_type:'manual_task',status:'unread'},
+    {id:'81000000-0000-4000-8000-000000000006',organization_id:financeOrg,user_id:financeUser,action_type:'clinical_alert',status:'unread'},
+  ];
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'},notifications});
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{message:'Quais são minhas pendências?'}});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.mode,'read_only');
+    assert.equal(body.intent,'own_pending_tasks');
+    assert.equal(body.message,'Você tem 2 pendências próprias em aberto.');
+    assert.doesNotMatch(body.message,/81000000|Ana|clínico|privado/i);
+    assert.deepEqual(s.database.calls,['organization_members','notifications']);
+  }finally{await s.close()}
+});
+test('chat rejects an invalid local-day range and does not query the agenda',async()=>{
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'}},null,()=>new Date('2026-10-10T15:00:00.000Z'));
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{
+      message:'Agenda de hoje',timezone:'America/Sao_Paulo',today_range:{from:'2026-10-10T03:00:00.000Z',to:'2026-10-12T03:00:00.000Z'},
+    }});
+    assert.equal(response.status,422);
+    assert.deepEqual(s.database.calls,['organization_members']);
+  }finally{await s.close()}
+});
+test('chat accepts 23-hour, 24-hour, and 25-hour local days across DST changes',async()=>{
+  const cases=[
+    {range:{from:'2025-03-09T05:00:00.000Z',to:'2025-03-10T04:00:00.000Z'},now:'2025-03-09T16:00:00.000Z'},
+    {range:{from:'2025-03-08T05:00:00.000Z',to:'2025-03-09T05:00:00.000Z'},now:'2025-03-08T17:00:00.000Z'},
+    {range:{from:'2025-11-02T04:00:00.000Z',to:'2025-11-03T05:00:00.000Z'},now:'2025-11-02T17:00:00.000Z'},
+  ];
+  for(const {range:today_range,now} of cases){
+    const s=await startServer({membership:{organization_id:financeOrg,role:'professional'}},null,()=>new Date(now));
+    try{
+      const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{
+        message:'Agenda de hoje',timezone:'America/New_York',today_range,
+      }});
+      assert.equal(response.status,200);
+      assert.equal((await response.json()).message,'Você não tem atendimentos previstos para hoje.');
+    }finally{await s.close()}
+  }
+});
+test('chat rejects an invalid timezone',async()=>{
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'}},null,()=>new Date('2026-10-10T15:00:00.000Z'));
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{
+      message:'Agenda de hoje',timezone:'Mars/Olympus',today_range:{from:'2026-10-10T03:00:00.000Z',to:'2026-10-11T03:00:00.000Z'},
+    }});
+    assert.equal(response.status,422);
+    assert.deepEqual(s.database.calls,['organization_members']);
+  }finally{await s.close()}
+});
+test('chat rejects valid local-day ranges in the past or future',async()=>{
+  const ranges=[
+    {from:'2026-10-09T03:00:00.000Z',to:'2026-10-10T03:00:00.000Z'},
+    {from:'2026-10-11T03:00:00.000Z',to:'2026-10-12T03:00:00.000Z'},
+  ];
+  for(const today_range of ranges){
+    const s=await startServer({membership:{organization_id:financeOrg,role:'professional'}},null,()=>new Date('2026-10-10T15:00:00.000Z'));
+    try{
+      const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{
+        message:'Agenda de hoje',timezone:'America/Sao_Paulo',today_range,
+      }});
+      assert.equal(response.status,422);
+      assert.deepEqual(s.database.calls,['organization_members']);
+    }finally{await s.close()}
+  }
+});
+test('chat returns the empty agenda message and excludes the exclusive end boundary',async()=>{
+  const boundaryOnly={id:'80000000-0000-4000-8000-000000000007',organization_id:financeOrg,professional_id:financeUser,starts_at:'2026-10-11T03:00:00.000Z',status:'confirmed'};
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'},appointments:[boundaryOnly]},null,()=>new Date('2026-10-10T15:00:00.000Z'));
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{
+      message:'Agenda de hoje',timezone:'America/Sao_Paulo',today_range:{from:'2026-10-10T03:00:00.000Z',to:'2026-10-11T03:00:00.000Z'},
+    }});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.message,'Você não tem atendimentos previstos para hoje.');
+    assert.equal(body.mode,'read_only');
+    assert.equal(body.intent,'agenda_today');
+    assert.deepEqual(s.database.calls,['organization_members','appointments']);
+  }finally{await s.close()}
+});
+test('chat returns the exact empty own-task message without reading other tables',async()=>{
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'}});
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{message:'Quais são minhas pendências?'}});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.message,'Você não tem pendências próprias em aberto.');
+    assert.equal(body.mode,'read_only');
+    assert.equal(body.intent,'own_pending_tasks');
+    assert.deepEqual(s.database.calls,['organization_members','notifications']);
+  }finally{await s.close()}
+});
+test('chat refuses unsupported clinical requests without reading clinical tables',async()=>{
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'},patients:[{id:'90000000-0000-4000-8000-000000000001',full_name:'Paciente Fictício'}]});
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{message:'Mostre a evolução do paciente Ana'}});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.mode,'read_only');
+    assert.equal(body.intent,'unsupported');
+    assert.doesNotMatch(body.message,/Ana|Paciente Fictício|evolução clínica/i);
+    assert.deepEqual(s.database.calls,['organization_members']);
+  }finally{await s.close()}
+});
 test('patients require authentication',async()=>{const s=await startServer();assert.equal((await request(s.baseUrl,'/patients')).status,401);await s.close()});
 test('patient creation validates name',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/patients',{method:'POST',headers:{Authorization:'Bearer valid'},body:{full_name:'A'}});assert.equal(r.status,422);await s.close()});
 test('patient creation derives organization and professional from authenticated membership',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/patients',{method:'POST',headers:{Authorization:'Bearer valid'},body:{full_name:'Paciente Fictício'}});assert.equal(r.status,201);const body=await r.json();assert.equal(body.patient.organization_id,'22222222-2222-4222-8222-222222222222');assert.equal(body.patient.professional_id,'11111111-1111-4111-8111-111111111111');await s.close()});

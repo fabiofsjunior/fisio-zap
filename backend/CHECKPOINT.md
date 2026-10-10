@@ -1,20 +1,23 @@
 # Checkpoint — Backend / API
 
-## Execução — 06/10/2026
+## Execução — 10/10/2026
 - `GET /health` permanece público.
-- `POST /chat` implementado com Bearer token Supabase.
+- `POST /chat` exige Bearer token Supabase e valida a organização ativa pela membership.
+- S7.1 reconhece apenas consultas read-only de agenda do dia e pendências próprias; o backend só aceita o dia local atual segundo o relógio do servidor e respeita dias de 23/24/25 horas.
+- Respostas trazem somente horários ou contagens, sem nomes, IDs, mensagens de tarefa ou conteúdo clínico. Solicitações não suportadas não consultam tabelas clínicas.
+- Nenhum modelo/provedor externo, escrita de dados ou persistência de conversa foi adicionado.
 - Payload validado: `message` obrigatório, máximo de 4.000 caracteres.
 - Rate limit local: 30 requisições/minuto por IP.
 - CORS restrito a `FRONTEND_ORIGIN`.
-- Resposta atual é explicitamente `mode: "demo"`; sem persistência e sem IA real.
-- Smoke tests adicionados para health, autenticação, payload inválido, CORS e fluxo autenticado.
+- Respostas operacionais são explicitamente `mode: "read_only"`.
+- Testes cobrem escopo de organização/profissional, data atual com relógio determinístico, ranges passado/futuro, DST de 23/24/25 horas, limite final exclusivo, resultados vazios, tarefas próprias e fallback sem consultas clínicas.
 - Workflow GitHub Actions criado para executar `npm test` em `TESTES`.
 
 ## Validação
-- [x] Casos de teste definidos e versionados.
-- [ ] Execução do workflow/CI ainda pendente de resultado.
-- [ ] Teste real com Supabase e token válido ainda pendente.
+- [x] 57 testes backend aprovados localmente; execução do harness requer loopback local.
+- [ ] CI da branch S7.1 (backend, web, migrations, pgTAP e RLS) pendente.
+- [ ] Teste manual com Supabase local e token válido pendente.
 - [ ] Jornada ponta a ponta login → Chat → API → resposta → logout ainda pendente.
 
 ## Próximo passo exato
-Executar o CI da branch `TESTES`, corrigir eventuais falhas e depois realizar smoke test com Supabase real antes de conectar IA.
+Solicitar revisão independente, abrir a PR S7.1 para `TESTES`, aguardar CI completo e fazer smoke test local antes da homologação do proprietário.
