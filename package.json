@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test:agenda-day-range": "node scripts/agenda-day-range.test.mjs",
     "bootstrap:test-accounts": "node --env-file=.env.local scripts/bootstrap-test-accounts.mjs",
     "test:smoke": "node --env-file=.env.local scripts/smoke-test.mjs",
     "test:rls": "node --env-file=.env.local scripts/rls-negative-test.mjs",

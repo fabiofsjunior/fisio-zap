@@ -18,6 +18,7 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: node --test scripts/tests/*.test.mjs
       - run: npm run build
+      - run: npm run test:agenda-day-range
 
   backend:
     runs-on: ubuntu-latest
