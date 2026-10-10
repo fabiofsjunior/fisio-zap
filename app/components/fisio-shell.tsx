@@ -6,6 +6,7 @@ import { createBrowserClient } from '@supabase/ssr';
 import PatientsPanel from '@/app/components/patients-panel';
 import AgendaPanel from '@/app/components/agenda-panel';
 import ClinicalPanel from '@/app/components/clinical-panel';
+import NotificationsPanel from '@/app/components/notifications-panel';
 
 type Message = { id: number; role: 'user' | 'assistant'; text: string; mode?: 'demo' };
 
@@ -92,6 +93,7 @@ export default function FisioShell({ email, role, organizationId, userId }: { em
     if (!active) return null;
     if (activeModule === 'Agenda' || activeModule === 'Minha rotina') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><AgendaPanel organizationId={organizationId} userId={userId} canManageClinicalRecords={canManageClinicalRecords} /></>;
     if (activeModule === 'Pacientes') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><PatientsPanel /></>;
+    if (activeModule === 'Notificações') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><NotificationsPanel organizationId={organizationId} /></>;
     if (activeModule === 'Evoluções' || activeModule === 'Exercícios e protocolos') return <ClinicalPanel organizationId={organizationId} userId={userId} canManageClinicalRecords={canManageClinicalRecords} onClose={() => setActiveModule(null)} />;
     const [, title, description] = active;
     const actions: Record<string, string[]> = {

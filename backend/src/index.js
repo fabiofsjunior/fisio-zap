@@ -187,6 +187,127 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     if (!membership) { rejectMembership(req, res); return null; }
     return membership;
   }
+  const NOTIFICATION_FIELDS = 'id,organization_id,user_id,title,priority,status,message,action_type,action_data,read_at,completed_at,created_at';
+  const NOTIFICATION_STATUSES = new Set(['unread','read','completed','dismissed']);
+  const NOTIFICATION_PRIORITIES = new Set(['urgent','attention','informational']);
+  function isValidNotificationDueAt(value) {
+    if (typeof value !== 'string') return false;
+    const match = /^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(value);
+    if (!match || !Number.isFinite(Date.parse(value))) return false;
+    const [, yearText, monthText, dayText] = match;
+    const year = Number(yearText), month = Number(monthText), day = Number(dayText);
+    if (year < 1 || month < 1 || month > 12) return false;
+    const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const daysByMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    return day >= 1 && day <= daysByMonth[month - 1];
+  }
+  function validateNotification(body, partial = false) {
+    const errors = {};
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return { body: 'Objeto obrigatório.' };
+    for (const key of ['organization_id','user_id','professional_id','patient_id','id','action_data','action_type']) {
+      if (Object.hasOwn(body, key)) errors[key] = 'Campo gerenciado pelo sistema.';
+    }
+    if (!partial || body.title !== undefined) {
+      if (typeof body.title !== 'string' || body.title.trim().length < 2) errors.title = 'Informe um título com pelo menos 2 caracteres.';
+      else if (body.title.trim().length > 120) errors.title = 'O título deve ter no máximo 120 caracteres.';
+    }
+    if (!partial || body.message !== undefined) {
+      if (body.message !== undefined && body.message !== null && (typeof body.message !== 'string' || body.message.trim().length > 1000)) errors.message = 'A mensagem deve ter no máximo 1000 caracteres.';
+    }
+    if (body.priority !== undefined && !NOTIFICATION_PRIORITIES.has(body.priority)) errors.priority = 'Prioridade inválida.';
+    if (body.due_at !== undefined && body.due_at !== null && body.due_at !== '') {
+      if (!isValidNotificationDueAt(body.due_at)) errors.due_at = 'Vencimento deve ser uma data/hora válida com fuso horário.';
+    }
+    return errors;
+  }
+  app.get('/notifications', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    if (req.query.status && !NOTIFICATION_STATUSES.has(req.query.status)) return res.status(422).json({ error: 'Status inválido.' });
+    if (req.query.priority && !NOTIFICATION_PRIORITIES.has(req.query.priority)) return res.status(422).json({ error: 'Prioridade inválida.' });
+    let query = req.supabase.from('notifications').select(NOTIFICATION_FIELDS)
+      .eq('organization_id', membership.organization_id).eq('user_id', req.user.id)
+      .eq('action_type', 'manual_task')
+      .order('created_at', { ascending: false }).limit(100);
+    if (req.query.status) query = query.eq('status', req.query.status);
+    if (req.query.priority) query = query.eq('priority', req.query.priority);
+    const { data, error } = await query;
+    if (error) return res.status(400).json({ error: 'Não foi possível consultar as tarefas.' });
+    return res.json({ notifications: data ?? [] });
+  });
+  app.post('/notifications', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    const errors = validateNotification(req.body);
+    if (Object.keys(errors).length) return res.status(422).json({ error: 'Dados inválidos.', fields: errors });
+    const title = req.body.title.trim();
+    const message = typeof req.body.message === 'string' ? req.body.message.trim() : '';
+    const dueAt = req.body.due_at ? new Date(req.body.due_at).toISOString() : null;
+    const payload = {
+      organization_id: membership.organization_id,
+      professional_id: req.user.id,
+      user_id: req.user.id,
+      patient_id: null,
+      type: 'task',
+      title,
+      body: message || title,
+      message: message || null,
+      priority: req.body.priority || 'informational',
+      status: 'unread',
+      action_type: 'manual_task',
+      action_data: dueAt ? { due_at: dueAt } : {},
+    };
+    const { data, error } = await req.supabase.from('notifications').insert(payload).select(NOTIFICATION_FIELDS).single();
+    if (error) return res.status(400).json({ error: 'Não foi possível criar a tarefa.' });
+    return res.status(201).json({ notification: data });
+  });
+  app.patch('/notifications/:id', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    if (!isUuid(req.params.id)) return res.status(400).json({ error: 'Tarefa inválida.' });
+    const errors = validateNotification(req.body, true);
+    if (req.body?.status !== undefined && !NOTIFICATION_STATUSES.has(req.body.status)) errors.status = 'Status inválido.';
+    if (Object.keys(errors).length) return res.status(422).json({ error: 'Dados inválidos.', fields: errors });
+    const allowed = ['title','message','priority','due_at','status'];
+    if (!allowed.some(key => req.body?.[key] !== undefined)) return res.status(422).json({ error: 'Nenhuma alteração permitida.' });
+    const { data: existing, error: lookupError } = await req.supabase.from('notifications').select(NOTIFICATION_FIELDS)
+      .eq('id', req.params.id).eq('organization_id', membership.organization_id).eq('user_id', req.user.id)
+      .eq('action_type', 'manual_task').maybeSingle();
+    if (lookupError || !existing) return res.status(404).json({ error: 'Tarefa não encontrada.' });
+    if (['completed','dismissed'].includes(existing.status) && req.body.status && req.body.status !== existing.status) return res.status(409).json({ error: 'Tarefa concluída ou descartada não pode ser reaberta.' });
+    const patch = {};
+    if (req.body.title !== undefined) patch.title = req.body.title.trim();
+    if (req.body.message !== undefined) {
+      patch.message = req.body.message?.trim() || null;
+      patch.body = patch.message || existing.title;
+    }
+    if (req.body.priority !== undefined) patch.priority = req.body.priority;
+    if (req.body.due_at !== undefined) {
+      const actionData = { ...(existing.action_data ?? {}) };
+      if (req.body.due_at) actionData.due_at = new Date(req.body.due_at).toISOString(); else delete actionData.due_at;
+      patch.action_data = actionData;
+    }
+    if (req.body.status !== undefined) {
+      patch.status = req.body.status;
+      if (req.body.status === 'read') patch.read_at = existing.read_at || new Date().toISOString();
+      if (req.body.status === 'unread') patch.read_at = null;
+      if (req.body.status === 'completed') patch.completed_at = new Date().toISOString();
+      if (req.body.status !== 'completed') patch.completed_at = null;
+    }
+    const { data, error } = await req.supabase.from('notifications').update(patch)
+      .eq('id', req.params.id).eq('organization_id', membership.organization_id).eq('user_id', req.user.id).eq('action_type', 'manual_task')
+      .select(NOTIFICATION_FIELDS).maybeSingle();
+    if (error) return res.status(400).json({ error: 'Não foi possível atualizar a tarefa.' });
+    if (!data) return res.status(404).json({ error: 'Tarefa não encontrada.' });
+    return res.json({ notification: data });
+  });
+  app.delete('/notifications/:id', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    if (!isUuid(req.params.id)) return res.status(400).json({ error: 'Tarefa inválida.' });
+    const { data, error } = await req.supabase.from('notifications').delete()
+      .eq('id', req.params.id).eq('organization_id', membership.organization_id).eq('user_id', req.user.id).eq('action_type', 'manual_task')
+      .select('id').maybeSingle();
+    if (error) return res.status(400).json({ error: 'Não foi possível excluir a tarefa.' });
+    if (!data) return res.status(404).json({ error: 'Tarefa não encontrada.' });
+    return res.status(204).send();
+  });
   app.get('/appointments', rateLimit, requireAuth, async (req, res) => {
     const membership = await appointmentScope(req,res); if (!membership) return;
     let query = req.supabase.from('appointments').select(APPOINTMENT_FIELDS).eq('organization_id', membership.organization_id).order('starts_at', { ascending: true }).limit(250);

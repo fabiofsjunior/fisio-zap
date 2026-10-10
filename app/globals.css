@@ -181,3 +181,30 @@ button:disabled{cursor:wait;opacity:.7}
 
 
 .clinical-readonly-note{padding:10px 12px;border-radius:10px;background:#f3f5f4;color:#526057;font-size:13px;line-height:1.5}
+
+.notification-privacy{background:#f4f7f4}
+.notification-privacy p{margin:5px 0 0;color:#69756e;font-size:13px;line-height:1.5}
+.notification-form h3,.notification-list h3{margin:0}
+.notification-form label,.notification-fields label{display:grid;gap:7px;font-size:13px;font-weight:700}
+.notification-form textarea{resize:vertical}
+.notification-form button[type="submit"],.notification-actions button:not(.text-button){border:0;border-radius:11px;padding:0 16px;color:#fff;background:#17352a}
+.notification-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.muted{color:#69756e;font-weight:400}
+.notification-list-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.notification-list-heading label{display:flex;align-items:center;gap:8px;color:#69756e;font-size:12px}
+.notification-list-heading select{min-height:40px;padding:8px 10px}
+.notification-items{list-style:none;margin:0;padding:0}
+.notification-item{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 0;border-top:1px solid #edf0ee}
+.notification-copy{display:grid;gap:5px;min-width:0}
+.notification-copy strong{overflow-wrap:anywhere}
+.notification-copy p{margin:0;color:#69756e;font-size:13px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+.notification-meta{color:#69756e;font-size:11px}
+.notification-due{color:#526057;font-size:12px}
+.priority-urgent .notification-meta{color:#9a3931;font-weight:700}
+.priority-attention .notification-meta{color:#86621a;font-weight:700}
+.notification-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:7px;flex:none}
+.notification-actions button{min-height:40px}
+.notification-actions .secondary-button{color:#17352a!important;background:#eef3ef!important;border:1px solid #d5ddd8!important}
+.notification-actions .text-button{min-height:40px;border:0;padding:0 8px;background:transparent;color:#657168;text-decoration:underline}
+.completed-label,.empty-notifications{color:#69756e;font-size:13px}
+@media(max-width:560px){.notification-fields{grid-template-columns:1fr}.notification-item{align-items:flex-start;flex-direction:column}.notification-actions{justify-content:flex-start}.notification-list-heading{align-items:flex-start;flex-direction:column}}

@@ -1,7 +1,18 @@
 # FisioZap — Checkpoint global para agentes
 
-**Branch obrigatória:** `TESTES`  
-**Estado:** S1.5 em validação; autenticação e fluxo local permanecem preservados.
+**Branch obrigatória:** `feature/* → TESTES → main`
+**Estado observado em 10/10/2026:** S4 integrada em `TESTES`; S5.1 em implementação na `feature/s5-notifications`. Não integrar em `main` sem fluxo autorizado.
+
+## Checkpoint atual — 10/10/2026
+- `TESTES` está em `1653fb556ed352093e13e3ac95b71e0aadc851b4`, após os merges #19 e #20.
+- PR #19 (hardening dos scripts de teste Supabase local) e PR #20 (limites de agenda seguros para horário de verão) foram integradas em `TESTES`; CI pós-merge #160 aprovou os quatro jobs (backend, web, database/pgTAP e RLS).
+- PR #18 continua aberta e não foi integrada.
+- Issues #11 e #13–#16 continuam abertas. A homologação funcional S3/S4 pelo proprietário permanece pendente.
+- Issue #21 registra S5.1 — central pessoal de tarefas e lembretes. Implementação local na branch `feature/s5-notifications`; ainda aguarda revisão e PR/CI. A issue deve permanecer aberta até homologação.
+- Nenhuma migration ou alteração em banco remoto foi executada. Nenhum Preview Deployment foi ativado.
+- `main` permanece intacta.
+- Validação local da S5.1: backend 35/35; scripts/tests (guard de mutações) 6/6; sintaxe do teste RLS e `git diff --check` aprovados; `npm run build` aprovado. A validação Supabase/pgTAP/RLS desta branch depende do CI após abrir PR, pois não foi executada contra banco local neste ambiente.
+- Próximo passo: concluir revisões independentes, corrigir eventuais bloqueios, abrir PR da `feature/s5-notifications` para `TESTES`, aguardar CI e deixar a homologação funcional local para o proprietário.
 
 ## Progresso em 06/10/2026
 - Login Supabase: validado e não alterado.
