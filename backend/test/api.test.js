@@ -6,9 +6,10 @@ process.env.NEXT_PUBLIC_SUPABASE_URL='http://test.local';
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY='test-anon-key';
 const {createApp}=await import('../src/index.js');
 
-function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],operationErrors={}}={}){
+function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],operationErrors={},selectCountOverrides={}}={}){
   const memberRows=(memberships??[membership]).map(row=>({...row,user_id:row.user_id??user.id}));
   const calls=[];
+  const queries=[];
   const rowsByTable={
     organization_members:memberRows,
     patients,
@@ -23,15 +24,16 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
   };
   const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):operator==='gte'?Date.parse(row[key])>=Date.parse(value):operator==='lt'?Date.parse(row[key])<Date.parse(value):row[key]===value));
   return {
-    calls,
+    calls,queries,
     auth:{getUser:async token=>token==='valid'?{data:{user},error:null}:{data:{user:null},error:new Error('invalid token')}},
     from(table){
       calls.push(table);
       const state={table,values:null,filters:[],operation:'select',limit:null,range:null,orderBy:[]};
+      queries.push(state);
       const tableRows=rowsByTable[table]??[];
       const matching=()=>matchingRows(tableRows,state.filters);
       const api={
-        select(){return api},
+        select(columns,options){state.columns=columns;state.selectOptions=options;return api},
         eq(k,v){state.filters.push([k,v,'eq']);return api},
         in(k,values){state.filters.push([k,values,'in']);return api},
         gte(k,v){state.filters.push([k,v,'gte']);return api},
@@ -59,14 +61,15 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
         },
         then(resolve){
           const operationError=operationErrors[state.table]?.[state.operation];
-          if(operationError)return Promise.resolve({data:null,error:operationError}).then(resolve);
+          if(operationError)return Promise.resolve({data:null,error:operationError,count:null}).then(resolve);
           let data=matching();
+          const count=Object.hasOwn(selectCountOverrides,state.table)?selectCountOverrides[state.table]:data.length;
           if(state.operation==='update')for(const row of data)Object.assign(row,state.values);
           if(state.operation==='delete'){for(const row of data)tableRows.splice(tableRows.indexOf(row),1);data=[]}
           if(state.orderBy.length){data=[...data].sort((a,b)=>{for(const {key,ascending} of state.orderBy){const result=String(a[key]).localeCompare(String(b[key]));if(result)return ascending?result:-result}return 0})}
           if(state.range)data=data.slice(state.range.start,state.range.end+1);
           if(state.limit!==null)data=data.slice(0,state.limit);
-          return Promise.resolve({data,error:null}).then(resolve);
+          return Promise.resolve({data,error:null,count}).then(resolve);
         }
       }; return api;
     }
@@ -543,6 +546,128 @@ test('chat refuses unsupported clinical requests without reading clinical tables
     assert.doesNotMatch(body.message,/Ana|Paciente Fictício|evolução clínica/i);
     assert.deepEqual(s.database.calls,['organization_members']);
   }finally{await s.close()}
+});
+test('chat summarizes exact cents for a month with professional and exclusive-date scoping',async()=>{
+  const rows=[
+    financialEntry('82000000-0000-4000-8000-000000000001',{amount:'120.35',paid_at:'2027-01-02T10:00:00Z'}),
+    financialEntry('82000000-0000-4000-8000-000000000002',{amount:'10.05'}),
+    financialEntry('82000000-0000-4000-8000-000000000003',{kind:'expense',entry_type:'expense',amount:'30.10',paid_at:'2027-01-03T10:00:00Z'}),
+    financialEntry('82000000-0000-4000-8000-000000000004',{kind:'expense',entry_type:'expense',amount:'5.99'}),
+    financialEntry('82000000-0000-4000-8000-000000000005',{occurred_at:'2026-11-30',amount:'80.00'}),
+    financialEntry('82000000-0000-4000-8000-000000000006',{occurred_at:'2027-01-01',amount:'90.00'}),
+    financialEntry('82000000-0000-4000-8000-000000000007',{professional_id:financePeer,amount:'70.00'}),
+    financialEntry('82000000-0000-4000-8000-000000000008',{organization_id:financeForeignOrg,amount:'60.00'}),
+  ];
+  const s=await startServer({financialEntries:rows});
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{message:'Resumo financeiro deste mês',month:'2026-12'}});
+    assert.equal(response.status,200);
+    assert.deepEqual(await response.json(),{
+      message:'Resumo financeiro de dezembro de 2026 (seus lançamentos): receitas pagas R$ 120,35, receitas pendentes R$ 10,05, despesas pagas R$ 30,10, despesas pendentes R$ 5,99. Saldo realizado: R$ 90,25.',
+      mode:'read_only',intent:'financial_summary',
+    });
+    assert.deepEqual(s.database.calls,['organization_members','financial_entries']);
+    const query=s.database.queries.find(item=>item.table==='financial_entries');
+    assert.equal(query.columns,'kind,entry_type,amount,paid_at');
+    assert.deepEqual(query.selectOptions,{count:'exact'});
+    assert.equal(query.limit,1000);
+    assert.deepEqual(query.filters,[['organization_id',financeOrg,'eq'],['occurred_at','2026-12-01','gte'],['occurred_at','2027-01-01','lt'],['professional_id',financeUser,'eq']]);
+  }finally{await s.close()}
+});
+test('chat financial summary scopes managers to the active organization and denies unknown roles',async()=>{
+  const rows=[financialEntry('83000000-0000-4000-8000-000000000001'),financialEntry('83000000-0000-4000-8000-000000000002',{professional_id:financePeer})];
+  const manager=await startServer({membership:{organization_id:financeOrg,role:'administrative'},financialEntries:rows});
+  const unknown=await startServer({membership:{organization_id:financeOrg,role:'assistant'},financialEntries:rows});
+  try{
+    const response=await request(manager.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Como está meu financeiro?',month:'2026-12'}});
+    assert.equal(response.status,200);
+    assert.match((await response.json()).message,/\(da organização ativa\)/);
+    const query=manager.database.queries.find(item=>item.table==='financial_entries');
+    assert.deepEqual(query.filters,[['organization_id',financeOrg,'eq'],['occurred_at','2026-12-01','gte'],['occurred_at','2027-01-01','lt']]);
+    const denied=await request(unknown.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(denied.status,403);
+    assert.deepEqual(unknown.database.calls,['organization_members']);
+  }finally{await manager.close();await unknown.close()}
+});
+test('chat rejects invalid financial months before querying financial data',async()=>{
+  for(const month of ['2026-13','2026-02-30','2026-00',null]){
+    const s=await startServer();
+    try{
+      const response=await request(s.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',...(month===null?{}:{month})}});
+      assert.equal(response.status,422);
+      assert.deepEqual(s.database.calls,['organization_members']);
+    }finally{await s.close()}
+  }
+});
+test('chat financial summary handles empty months and safe query errors',async()=>{
+  const empty=await startServer();
+  const failed=await startServer({operationErrors:{financial_entries:{select:new Error('database secret')}}});
+  try{
+    const response=await request(empty.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro do mês atual',month:'2027-01'}});
+    assert.equal(response.status,200);
+    assert.match((await response.json()).message,/receitas pagas R\$ 0,00.*Saldo realizado: R\$ 0,00/);
+    const error=await request(failed.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(error.status,400);
+    assert.deepEqual(await error.json(),{error:'Não foi possível consultar o resumo financeiro.'});
+  }finally{await empty.close();await failed.close()}
+});
+test('chat financial summary rejects corrupt amounts and unexpected kinds',async()=>{
+  const corruptAmounts=[-1,0,'0',1.001,'1.001','NaN',null];
+  for(const amount of corruptAmounts){
+    const s=await startServer({financialEntries:[financialEntry('85500000-0000-4000-8000-000000000001',{amount})]});
+    try{
+      const response=await request(s.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+      assert.equal(response.status,500,String(amount));
+      assert.deepEqual(await response.json(),{error:'Não foi possível totalizar os lançamentos com segurança.'});
+    }finally{await s.close()}
+  }
+  for(const kind of ['constructor','invalid']){
+    const s=await startServer({financialEntries:[financialEntry('85600000-0000-4000-8000-000000000001',{kind,entry_type:kind})]});
+    try{
+      const response=await request(s.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+      assert.equal(response.status,500,kind);
+      assert.deepEqual(await response.json(),{error:'Não foi possível totalizar os lançamentos com segurança.'});
+    }finally{await s.close()}
+  }
+});
+test('chat financial summary adds numeric values in cents and formats a negative realized balance',async()=>{
+  const rows=[
+    financialEntry('85700000-0000-4000-8000-000000000001',{amount:0.1,paid_at:'2026-12-02T10:00:00Z'}),
+    financialEntry('85700000-0000-4000-8000-000000000002',{amount:0.2,paid_at:'2026-12-03T10:00:00Z'}),
+    financialEntry('85700000-0000-4000-8000-000000000003',{kind:'expense',entry_type:'expense',amount:0.5,paid_at:'2026-12-04T10:00:00Z'}),
+  ];
+  const s=await startServer({financialEntries:rows});
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(response.status,200);
+    assert.equal((await response.json()).message,'Resumo financeiro de dezembro de 2026 (seus lançamentos): receitas pagas R$ 0,30, receitas pendentes R$ 0,00, despesas pagas R$ 0,50, despesas pendentes R$ 0,00. Saldo realizado: -R$ 0,20.');
+  }finally{await s.close()}
+});
+test('chat refuses capped summaries and unsafe amounts, and ignores financial mutations or clinical requests',async()=>{
+  const tooMany=await startServer({financialEntries:Array.from({length:1000},(_,index)=>financialEntry('84000000-0000-4000-8000-'+String(index).padStart(12,'0')))});
+  const invalidAmount=await startServer({financialEntries:[financialEntry('85000000-0000-4000-8000-000000000001',{amount:'999999999999.99'})]});
+  const hiddenRows=await startServer({financialEntries:[financialEntry('84500000-0000-4000-8000-000000000001')],selectCountOverrides:{financial_entries:2}});
+  const missingCount=await startServer({selectCountOverrides:{financial_entries:null}});
+  const unsupported=await startServer();
+  try{
+    const truncated=await request(tooMany.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(truncated.status,413);
+    assert.match((await truncated.json()).error,/muitos lançamentos.*módulo financeiro/i);
+    const mismatch=await request(hiddenRows.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(mismatch.status,413);
+    const unknownCount=await request(missingCount.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(unknownCount.status,400);
+    const unsafe=await request(invalidAmount.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(unsafe.status,500);
+    assert.deepEqual(await unsafe.json(),{error:'Não foi possível totalizar os lançamentos com segurança.'});
+    for(const message of ['Registre uma despesa de 30 reais','Mostre o financeiro do paciente Ana']){
+      const callsBefore=unsupported.database.calls.length;
+      const response=await request(unsupported.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message,month:'2026-12'}});
+      assert.equal(response.status,200);
+      assert.equal((await response.json()).intent,'unsupported');
+      assert.deepEqual(unsupported.database.calls.slice(callsBefore),['organization_members']);
+    }
+  }finally{await tooMany.close();await invalidAmount.close();await hiddenRows.close();await missingCount.close();await unsupported.close()}
 });
 test('patients require authentication',async()=>{const s=await startServer();assert.equal((await request(s.baseUrl,'/patients')).status,401);await s.close()});
 test('patient creation validates name',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/patients',{method:'POST',headers:{Authorization:'Bearer valid'},body:{full_name:'A'}});assert.equal(r.status,422);await s.close()});
