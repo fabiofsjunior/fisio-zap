@@ -40,6 +40,7 @@ async function main() {
   const suffix = Date.now().toString(36);
   let orgId;
   let foreignOrgId;
+  let foreignProfessionalId;
   let outsiderId;
   try {
     const org = await must(admin.from('organizations').insert({
@@ -65,21 +66,32 @@ async function main() {
       full_name: `Paciente RLS responsável ${suffix}`,
     }).select('id').single(), 'criar paciente isolado');
 
+    const foreignProfessional = await must(admin.auth.admin.createUser({
+      email: `rls-foreign-${suffix}@example.test`,
+      password: `FisioZap!${suffix}ForeignOnlyLocal`,
+      email_confirm: true,
+    }), 'criar profissional sintético da organização estrangeira');
+    foreignProfessionalId = foreignProfessional.user.id;
     const foreignOrg = await must(admin.from('organizations').insert({
       name: `RLS sem vínculo ${suffix}`,
       owner_id: owner.id,
     }).select('id').single(), 'criar segunda organização isolada');
     foreignOrgId = foreignOrg.id;
+    await must(admin.from('organization_members').insert({
+      organization_id: foreignOrgId,
+      user_id: foreignProfessionalId,
+      role: 'professional',
+    }), 'associar profissional à organização estrangeira');
     const foreignPatient = await must(admin.from('patients').insert({
       organization_id: foreignOrgId,
-      professional_id: owner.id,
+      professional_id: foreignProfessionalId,
       full_name: `Paciente RLS outra organização ${suffix}`,
     }).select('id').single(), 'criar paciente da organização sem vínculo');
     const foreignEncounter = await must(admin.from('clinical_encounters').insert({
-      organization_id: foreignOrgId, patient_id: foreignPatient.id, professional_id: owner.id,
+      organization_id: foreignOrgId, patient_id: foreignPatient.id, professional_id: foreignProfessionalId,
     }).select('id').single(), 'criar atendimento de outra organização');
     const foreignNotification = await must(admin.from('notifications').insert({
-      organization_id: foreignOrgId, professional_id: professional.id, user_id: professional.id,
+      organization_id: foreignOrgId, professional_id: foreignProfessionalId, user_id: foreignProfessionalId,
       type: 'task', title: 'Tarefa RLS sintética', body: 'Lembrete sem dados clínicos.',
       message: 'Lembrete sem dados clínicos.', action_type: 'manual_task', action_data: {},
       priority: 'informational', status: 'unread',
@@ -91,7 +103,7 @@ async function main() {
       priority: 'informational', status: 'unread',
     }).select('id').single(), 'criar tarefa de outro profissional');
     const foreignDraftEvolution = await must(admin.from('clinical_evolutions').insert({
-      organization_id: foreignOrgId, encounter_id: foreignEncounter.id, author_id: owner.id,
+      organization_id: foreignOrgId, encounter_id: foreignEncounter.id, author_id: foreignProfessionalId,
       content: 'Rascunho sintético de outra organização.',
     }).select('id').single(), 'criar evolução de outra organização');
     // Positive control: privileged reads confirm both foreign fixtures exist.
@@ -130,7 +142,7 @@ async function main() {
       occurred_at: financialDate, due_date: financialDate, paid_at: null,
     }).select('id').single(), 'criar lançamento sintético do profissional');
     const foreignFinancialEntry = await must(admin.from('financial_entries').insert({
-      organization_id: foreignOrgId, professional_id: owner.id, patient_id: foreignPatient.id,
+      organization_id: foreignOrgId, professional_id: foreignProfessionalId, patient_id: foreignPatient.id,
       kind: 'income', entry_type: 'income', amount: '90.00', description: 'Lançamento sintético isolado',
       occurred_at: financialDate, due_date: financialDate, paid_at: null,
     }).select('id').single(), 'criar lançamento sintético de outra organização');
@@ -422,6 +434,9 @@ async function main() {
     if (!administrativeLogin.session) throw new Error('Login administrative não retornou sessão.');
     const administrativeLedger = await must(client.from('financial_entries').select('id').eq('organization_id', orgId), 'perfil administrative consultar livro-caixa');
     if (administrativeLedger.length < 3) throw new Error('RLS bloqueou acesso financeiro organizacional do perfil administrative.');
+    const administrativePaidPeerEntry = await must(client.from('financial_entries').update({ paid_at: null })
+      .eq('id', ownerFinancialEntry.id).select('id').maybeSingle(), 'administrative atualizar pagamento de lançamento da organização');
+    if (!administrativePaidPeerEntry.id) throw new Error('RLS bloqueou atualização financeira organizacional do perfil administrative.');
     const administrativePeerPatient = await must(client.from('patients').select('id').eq('id', patient.id), 'perfil administrative tentar ler paciente não atribuído');
     if (administrativePeerPatient.length !== 0) throw new Error('RLS falhou: perfil administrative ampliou leitura clínica de pacientes.');
     const administrativeClinicalRead = await must(client.from('clinical_encounters').select('id').eq('id', ownerEncounter.id), 'perfil administrative tentar ler atendimento clínico de colega');
@@ -475,6 +490,10 @@ async function main() {
     if (outsiderId) {
       const { error } = await admin.auth.admin.deleteUser(outsiderId);
       if (error) throw new Error(`Falha ao remover usuário RLS sintético sem membership: ${error.message}`);
+    }
+    if (foreignProfessionalId) {
+      const { error } = await admin.auth.admin.deleteUser(foreignProfessionalId);
+      if (error) throw new Error(`Falha ao remover profissional sintético estrangeiro: ${error.message}`);
     }
   }
 }

@@ -4,17 +4,17 @@
 **Estado observado em 10/10/2026:** S5 integrada em `TESTES`; S6.1 implementada em `feature/s6-financial-ledger`, aguardando CI e integração.
 
 ## Checkpoint atual — 10/10/2026
-- `TESTES` está em `98961459a3d1aa027ce90390be8d4361d425e6f1`, após a integração da PR #18 (checkpoint S4) a pedido do proprietário. A PR #18 tinha CI #155 aprovado em 4/4; CI pós-merge #168 está em execução.
+- `TESTES` está em `98961459a3d1aa027ce90390be8d4361d425e6f1`, após a integração da PR #18 (checkpoint S4) a pedido do proprietário. A PR #18 tinha CI #155 aprovado em 4/4; CI pós-merge #168 também aprovou 4/4.
 - `main` permanece em `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`; não houve promoção para produção.
 - PR #18 foi integrada em `TESTES` no commit `98961459a3d1aa027ce90390be8d4361d425e6f1`.
 - Issues #11, #13–#16, #21 e #23 continuam abertas; homologações S3/S4/S5 pelo proprietário seguem pendentes.
-- Issue #25 registra a S6.1 — livro-caixa; a implementação foi concluída localmente em `feature/s6-financial-ledger`, com validação automatizada local e revisões independentes sem bloqueios.
-- A cópia de trabalho local partia de uma árvore igual à de `TESTES` antes da PR #18; a publicação da S6.1 será derivada do head atual `9896145`.
+- Issue #25 registra a S6.1 — livro-caixa. A PR #26 (`feature/s6-financial-ledger` → `TESTES`) está aberta sobre o commit `9896145`, sem merge. Manter a issue aberta até a homologação funcional do proprietário.
+- CI #169 da PR #26 aprovou backend, web e database/pgTAP; RLS falhou antes dos testes de policy porque o fixture estrangeiro violou a FK de membership em `patients`. A branch local corrige o fixture com um profissional membro somente da organização sintética estrangeira; revisões independentes de QA e Segurança não apontaram bloqueios.
 - Nenhuma migration ou alteração em banco remoto foi executada. Nenhum Preview Deployment foi ativado.
 - `main` permanece intacta.
-- Último CI da branch `TESTES` concluído antes da PR #18: run #167, 4/4 jobs verdes (backend, web, database/pgTAP e RLS).
-- Validação local S6.1: backend 47/47, guard Supabase local, teste de faixa DST, verificações de sintaxe/diff e build de produção web aprovados. O Supabase CLI e Docker não estão instalados nesta cópia; replay de migration, pgTAP e RLS dependem do CI.
-- Próximo passo: publicar a PR S6.1 para `TESTES`, aguardar todos os jobs e manter a issue #25 aberta para homologação funcional do proprietário.
+- Último CI concluído no branch `TESTES`: run #168, 4/4 jobs verdes (backend, web, database/pgTAP e RLS). O run #169 da PR #26 segue como falha de RLS até a correção do fixture ser validada num novo run.
+- Validação local S6.1: backend 47/47, guard de mutações Supabase local, teste de faixa DST, verificações de sintaxe/diff e build de produção web aprovados. O sandbox bloqueia loopback sem permissão adicional; `npm test` passou com loopback local habilitado. Supabase CLI/Docker não estão disponíveis nesta cópia; replay de migration, pgTAP e RLS devem ser confirmados pelo CI.
+- Próximo passo: publicar a correção do fixture na PR #26, exigir 4/4 jobs verdes e integrar somente em `TESTES`; manter a issue #25 aberta para homologação funcional do proprietário.
 
 ## Progresso em 06/10/2026
 - Login Supabase: validado e não alterado.
