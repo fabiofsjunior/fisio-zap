@@ -8,11 +8,11 @@
 - PR #19 (hardening dos scripts de teste Supabase local) e PR #20 (limites de agenda seguros para horário de verão) foram integradas em `TESTES`; CI pós-merge #160 aprovou os quatro jobs (backend, web, database/pgTAP e RLS).
 - PR #18 continua aberta e não foi integrada.
 - Issues #11 e #13–#16 continuam abertas. A homologação funcional S3/S4 pelo proprietário permanece pendente.
-- Issue #21 registra S5.1 — central pessoal de tarefas e lembretes. Implementação local na branch `feature/s5-notifications`; ainda aguarda revisão e PR/CI. A issue deve permanecer aberta até homologação.
+- Issue #21 registra S5.1 — central pessoal de tarefas e lembretes. PR #22 está aberta de `feature/s5-notifications` para `TESTES`; CI #161 aprovou os quatro jobs. A issue deve permanecer aberta até homologação funcional do proprietário.
 - Nenhuma migration ou alteração em banco remoto foi executada. Nenhum Preview Deployment foi ativado.
 - `main` permanece intacta.
-- Validação local da S5.1: backend 35/35; scripts/tests (guard de mutações) 6/6; sintaxe do teste RLS e `git diff --check` aprovados; `npm run build` aprovado. A validação Supabase/pgTAP/RLS desta branch depende do CI após abrir PR, pois não foi executada contra banco local neste ambiente.
-- Próximo passo: concluir revisões independentes, corrigir eventuais bloqueios, abrir PR da `feature/s5-notifications` para `TESTES`, aguardar CI e deixar a homologação funcional local para o proprietário.
+- Validação da S5.1: backend 39/39; scripts/tests (guard de mutações) 6/6; sintaxe do teste RLS e `git diff --check` aprovados; `npm run build` aprovado; CI #161 aprovou backend, web, database/pgTAP e RLS usando Supabase local isolado.
+- Próximo passo: proprietário homologar localmente a S5.1; manter PR #22 e issue #21 abertas enquanto aguarda essa validação.
 
 ## Progresso em 06/10/2026
 - Login Supabase: validado e não alterado.
