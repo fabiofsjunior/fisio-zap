@@ -80,14 +80,29 @@ async function main() {
     const foreignEncounter = await must(admin.from('clinical_encounters').insert({
       organization_id: foreignOrgId, patient_id: foreignPatient.id, professional_id: owner.id,
     }).select('id').single(), 'criar atendimento de outra organização');
+    const foreignNotification = await must(admin.from('notifications').insert({
+      organization_id: foreignOrgId, professional_id: professional.id, user_id: professional.id,
+      type: 'task', title: 'Tarefa RLS sintética', body: 'Lembrete sem dados clínicos.',
+      message: 'Lembrete sem dados clínicos.', action_type: 'manual_task', action_data: {},
+      priority: 'informational', status: 'unread',
+    }).select('id').single(), 'criar tarefa de outra organização');
+    const peerNotification = await must(admin.from('notifications').insert({
+      organization_id: orgId, professional_id: professional.id, user_id: owner.id,
+      type: 'task', title: 'Tarefa de outro profissional', body: 'Lembrete sintético.',
+      message: 'Lembrete sintético.', action_type: 'manual_task', action_data: {},
+      priority: 'informational', status: 'unread',
+    }).select('id').single(), 'criar tarefa de outro profissional');
     const foreignDraftEvolution = await must(admin.from('clinical_evolutions').insert({
       organization_id: foreignOrgId, encounter_id: foreignEncounter.id, author_id: owner.id,
       content: 'Rascunho sintético de outra organização.',
     }).select('id').single(), 'criar evolução de outra organização');
     // Positive control: privileged reads confirm both foreign fixtures exist.
-    for (const [table, id] of [['clinical_encounters', foreignEncounter.id], ['clinical_evolutions', foreignDraftEvolution.id]]) {
-      await must(admin.from(table).select('id').eq('id', id).single(), 'verificar fixture clínica estrangeira');
-    }
+    for (const [table, id, label] of [
+      ['clinical_encounters', foreignEncounter.id, 'atendimento estrangeiro'],
+      ['clinical_evolutions', foreignDraftEvolution.id, 'evolução estrangeira'],
+      ['notifications', foreignNotification.id, 'notificação estrangeira'],
+      ['notifications', peerNotification.id, 'notificação de colega'],
+    ]) await must(admin.from(table).select('id').eq('id', id).single(), `verificar fixture ${label}`);
     const foreignExercise = await must(admin.from('clinical_exercises').insert({
       organization_id: foreignOrgId, encounter_id: foreignEncounter.id, title: 'Exercício estrangeiro sintético',
     }).select('id').single(), 'criar exercício de outra organização');
@@ -128,6 +143,21 @@ async function main() {
     if (!ownMembership.some((membership) => membership.organization_id === orgId)) throw new Error('Membership da organização de teste não foi aplicada.');
     const foreignRead = await must(client.from('patients').select('id').eq('id', foreignPatient.id), 'testar leitura cruzada');
     if (foreignRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler paciente de organização sem vínculo.');
+    const foreignNotificationRead = await must(client.from('notifications').select('id').eq('id', foreignNotification.id), 'testar leitura de tarefa de outra organização');
+    if (foreignNotificationRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler tarefa de organização sem vínculo.');
+    const peerNotificationRead = await must(client.from('notifications').select('id').eq('id', peerNotification.id), 'testar leitura de tarefa de colega');
+    if (peerNotificationRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler tarefa de colega.');
+    const peerNotificationUpdate = await client.from('notifications').update({ title: 'Tentativa de alteração' }).eq('id', peerNotification.id).select('id');
+    if (peerNotificationUpdate.error || (peerNotificationUpdate.data ?? []).length) throw new Error(`RLS falhou: profissional alterou tarefa de colega${peerNotificationUpdate.error ? ` (${peerNotificationUpdate.error.message})` : ''}.`);
+    const peerNotificationDelete = await client.from('notifications').delete().eq('id', peerNotification.id).select('id');
+    if (peerNotificationDelete.error || (peerNotificationDelete.data ?? []).length) throw new Error(`RLS falhou: profissional excluiu tarefa de colega${peerNotificationDelete.error ? ` (${peerNotificationDelete.error.message})` : ''}.`);
+    const forgedNotification = await client.from('notifications').insert({
+      organization_id: orgId, professional_id: professional.id, user_id: owner.id,
+      type: 'task', title: 'Tarefa atribuída indevidamente', body: 'Lembrete sintético.',
+      message: 'Lembrete sintético.', action_type: 'manual_task', action_data: {},
+      priority: 'informational', status: 'unread',
+    }).select('id').maybeSingle();
+    expectDeniedByPolicy(forgedNotification, 'criar tarefa em nome de outro usuário');
     const foreignExerciseRead = await must(client.from('clinical_exercises').select('id').eq('id', foreignExercise.id), 'testar leitura de exercício entre organizações');
     if (foreignExerciseRead.length !== 0) throw new Error('RLS falhou: profissional conseguiu ler exercício de outra organização.');
     const foreignProtocolRead = await must(client.from('clinical_protocols').select('id').eq('id', foreignProtocol.id), 'testar leitura de protocolo entre organizações');
@@ -145,6 +175,13 @@ async function main() {
 
     const sameOrgPatient = await must(client.from('patients').select('id').eq('id', assignedPatient.id), 'ler paciente atribuído ao profissional');
     if (sameOrgPatient.length !== 1) throw new Error('RLS bloqueou o paciente atribuído ao profissional.');
+    const ownNotification = await must(client.from('notifications').insert({
+      organization_id: orgId, professional_id: professional.id, user_id: professional.id,
+      type: 'task', title: 'Tarefa própria RLS', body: 'Lembrete sintético.',
+      message: 'Lembrete sintético.', action_type: 'manual_task', action_data: {},
+      priority: 'informational', status: 'unread',
+    }).select('id').single(), 'criar tarefa própria');
+    if (!ownNotification.id) throw new Error('RLS não retornou a tarefa própria criada.');
     const ownEncounter = await must(client.from('clinical_encounters').insert({
       organization_id: orgId, patient_id: assignedPatient.id, professional_id: professional.id,
     }).select('id').single(), 'iniciar atendimento para paciente próprio');
@@ -266,6 +303,7 @@ async function main() {
     console.log('RLS NEGATIVE TEST OK');
     console.log(`Memberships do profissional: ${ownMembership.length}`);
     console.log('Leitura/alteração em outra organização: BLOQUEADAS');
+    console.log('Leitura/alteração/exclusão de tarefa de colega e atribuição forjada: BLOQUEADAS');
     console.log('Leitura de atendimentos e evoluções em outra organização: BLOQUEADA');
     console.log('Acesso a atendimento/evolução de colega na mesma organização: BLOQUEADO');
     console.log('CRUD de exercício próprio e isolamento de exercícios/protocolos/vínculos: VERIFICADOS');
@@ -276,6 +314,7 @@ async function main() {
     for (const cleanupOrgId of [orgId, foreignOrgId].filter(Boolean)) {
       const cleanupSteps = [
         ['clinical_encounter_protocols', admin.from('clinical_encounter_protocols').delete().eq('organization_id', cleanupOrgId)],
+        ['notifications', admin.from('notifications').delete().eq('organization_id', cleanupOrgId)],
         ['clinical_exercises', admin.from('clinical_exercises').delete().eq('organization_id', cleanupOrgId)],
         ['clinical_evolutions', admin.from('clinical_evolutions').delete().eq('organization_id', cleanupOrgId)],
         ['clinical_encounters', admin.from('clinical_encounters').delete().eq('organization_id', cleanupOrgId)],

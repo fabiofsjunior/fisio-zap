@@ -7,6 +7,10 @@ on:
     branches: [TESTES, main]
   workflow_dispatch:
 
+concurrency:
+  group: fisiozap-testes-ci
+  cancel-in-progress: false
+
 jobs:
   web:
     runs-on: ubuntu-latest
@@ -58,6 +62,7 @@ jobs:
         run: supabase test db --local
 
   rls:
+    needs: database
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

@@ -6,7 +6,7 @@ process.env.NEXT_PUBLIC_SUPABASE_URL='http://test.local';
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY='test-anon-key';
 const {createApp}=await import('../src/index.js');
 
-function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],operationErrors={}}={}){
+function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],operationErrors={}}={}){
   const memberRows=(memberships??[membership]).map(row=>({...row,user_id:row.user_id??user.id}));
   const rowsByTable={
     organization_members:memberRows,
@@ -16,6 +16,7 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
     clinical_exercises:exercises,
     clinical_protocols:protocols,
     clinical_encounter_protocols:encounterProtocols,
+    notifications,
   };
   const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):row[key]===value));
   return {
@@ -281,5 +282,126 @@ test('appointment conflict returns HTTP 409',async()=>{
       patient_id:patientId,starts_at:'2026-10-12T13:00:00Z',ends_at:'2026-10-12T14:00:00Z'
     }});
     assert.equal(response.status,409);
+  }finally{await s.close()}
+});
+
+test('notifications require authentication and list only the current user and organization',async()=>{
+  const own={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'11111111-1111-4111-8111-111111111111',action_type:'manual_task',title:'Tarefa própria',status:'unread'};
+  const peer={...own,id:'44444444-4444-4444-8444-444444444444',user_id:'55555555-5555-4555-8555-555555555555',title:'Tarefa alheia'};
+  const foreign={...own,id:'66666666-6666-4666-8666-666666666666',organization_id:'77777777-7777-4777-8777-777777777777',title:'Outra organização'};
+  const s=await startServer({notifications:[own,peer,foreign]});
+  try{
+    assert.equal((await request(s.baseUrl,'/notifications')).status,401);
+    const response=await request(s.baseUrl,'/notifications',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    assert.deepEqual((await response.json()).notifications.map(item=>item.id),[own.id]);
+  }finally{await s.close()}
+});
+
+test('notification routes reject authenticated users without organization membership',async()=>{
+  const s=await startServer({memberships:[]});
+  try{
+    const response=await request(s.baseUrl,'/notifications',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,403);
+  }finally{await s.close()}
+});
+
+test('notification creation derives scope from membership and stores only a bounded due date',async()=>{
+  const s=await startServer();
+  try{
+    const response=await request(s.baseUrl,'/notifications',{method:'POST',headers:{Authorization:'Bearer valid'},body:{
+      title:'  Confirmar horário  ',message:' Lembrete operacional ',priority:'attention',due_at:'2026-10-12T10:30:00-03:00'
+    }});
+    assert.equal(response.status,201);
+    const {notification}=await response.json();
+    assert.equal(notification.organization_id,'22222222-2222-4222-8222-222222222222');
+    assert.equal(notification.user_id,'11111111-1111-4111-8111-111111111111');
+    assert.equal(notification.professional_id,'11111111-1111-4111-8111-111111111111');
+    assert.equal(notification.title,'Confirmar horário');
+    assert.equal(notification.body,'Lembrete operacional');
+    assert.equal(notification.action_type,'manual_task');
+    assert.equal(notification.action_data.due_at,'2026-10-12T13:30:00.000Z');
+    assert.equal(notification.status,'unread');
+  }finally{await s.close()}
+});
+
+test('notification creation rejects client-controlled scope and invalid fields',async()=>{
+  const s=await startServer();
+  try{
+    const spoof=await request(s.baseUrl,'/notifications',{method:'POST',headers:{Authorization:'Bearer valid'},body:{title:'Tarefa',organization_id:'77777777-7777-4777-8777-777777777777'}});
+    assert.equal(spoof.status,422);
+    const invalid=await request(s.baseUrl,'/notifications',{method:'POST',headers:{Authorization:'Bearer valid'},body:{title:'x',priority:'critical',due_at:'2026-10-12T10:30:00'}});
+    assert.equal(invalid.status,422);
+    const impossibleDate=await request(s.baseUrl,'/notifications',{method:'POST',headers:{Authorization:'Bearer valid'},body:{title:'Tarefa válida',due_at:'2026-02-31T10:00:00Z'}});
+    assert.equal(impossibleDate.status,422);
+  }finally{await s.close()}
+});
+
+test('notification filters reject unsupported values',async()=>{
+  const s=await startServer();
+  try{
+    const status=await request(s.baseUrl,'/notifications?status=invalid',{headers:{Authorization:'Bearer valid'}});
+    const priority=await request(s.baseUrl,'/notifications?priority=critical',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(status.status,422);
+    assert.equal(priority.status,422);
+  }finally{await s.close()}
+});
+
+test('notification filters return only matching valid status and priority',async()=>{
+  const rows=[
+    {id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'11111111-1111-4111-8111-111111111111',action_type:'manual_task',title:'Urgente aberta',status:'unread',priority:'urgent'},
+    {id:'44444444-4444-4444-8444-444444444444',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'11111111-1111-4111-8111-111111111111',action_type:'manual_task',title:'Informativa concluída',status:'completed',priority:'informational'},
+  ];
+  const s=await startServer({notifications:rows});
+  try{
+    const response=await request(s.baseUrl,'/notifications?status=unread&priority=urgent',{headers:{Authorization:'Bearer valid'}});
+    assert.deepEqual((await response.json()).notifications.map(item=>item.id),[rows[0].id]);
+  }finally{await s.close()}
+});
+
+test('notification task routes do not expose legacy notifications',async()=>{
+  const legacy={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'11111111-1111-4111-8111-111111111111',action_type:'clinical_alert',title:'Aviso legado',status:'unread'};
+  const s=await startServer({notifications:[legacy]});
+  try{
+    const list=await request(s.baseUrl,'/notifications',{headers:{Authorization:'Bearer valid'}});
+    assert.deepEqual((await list.json()).notifications,[]);
+    assert.equal((await request(s.baseUrl,'/notifications/'+legacy.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{status:'read'}})).status,404);
+    assert.equal((await request(s.baseUrl,'/notifications/'+legacy.id,{method:'DELETE',headers:{Authorization:'Bearer valid'}})).status,404);
+  }finally{await s.close()}
+});
+
+test('notification state changes set server timestamps and terminal tasks cannot reopen',async()=>{
+  const task={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'11111111-1111-4111-8111-111111111111',action_type:'manual_task',title:'Tarefa',body:'Tarefa',status:'unread',action_data:{}};
+  const s=await startServer({notifications:[task]});
+  try{
+    const completed=await request(s.baseUrl,'/notifications/'+task.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{status:'completed',organization_id:'77777777-7777-4777-8777-777777777777'}});
+    assert.equal(completed.status,422);
+    const response=await request(s.baseUrl,'/notifications/'+task.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{status:'completed'}});
+    assert.equal(response.status,200);
+    const {notification}=await response.json();
+    assert.equal(notification.status,'completed');
+    assert.ok(Number.isFinite(Date.parse(notification.completed_at)));
+    assert.equal((await request(s.baseUrl,'/notifications/'+task.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{status:'unread'}})).status,409);
+  }finally{await s.close()}
+});
+
+test('notification due date can be changed and cleared without losing other action metadata',async()=>{
+  const task={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'11111111-1111-4111-8111-111111111111',action_type:'manual_task',title:'Tarefa',status:'unread',action_data:{source:'manual'}};
+  const s=await startServer({notifications:[task]});
+  try{
+    const changed=await request(s.baseUrl,'/notifications/'+task.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{due_at:'2026-10-12T10:30:00-03:00'}});
+    assert.equal((await changed.json()).notification.action_data.due_at,'2026-10-12T13:30:00.000Z');
+    const cleared=await request(s.baseUrl,'/notifications/'+task.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{due_at:null}});
+    const notification=(await cleared.json()).notification;
+    assert.equal(Object.hasOwn(notification.action_data,'due_at'),false);
+    assert.equal(notification.action_data.source,'manual');
+  }finally{await s.close()}
+});
+
+test('notification delete is scoped to the authenticated user',async()=>{
+  const other={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'55555555-5555-4555-8555-555555555555',action_type:'manual_task',title:'Tarefa de outra pessoa'};
+  const s=await startServer({notifications:[other]});
+  try{
+    assert.equal((await request(s.baseUrl,'/notifications/'+other.id,{method:'DELETE',headers:{Authorization:'Bearer valid'}})).status,404);
   }finally{await s.close()}
 });
