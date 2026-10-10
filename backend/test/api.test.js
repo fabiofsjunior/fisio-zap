@@ -6,7 +6,7 @@ process.env.NEXT_PUBLIC_SUPABASE_URL='http://test.local';
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY='test-anon-key';
 const {createApp}=await import('../src/index.js');
 
-function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],operationErrors={}}={}){
+function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],operationErrors={}}={}){
   const memberRows=(memberships??[membership]).map(row=>({...row,user_id:row.user_id??user.id}));
   const rowsByTable={
     organization_members:memberRows,
@@ -17,20 +17,23 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
     clinical_protocols:protocols,
     clinical_encounter_protocols:encounterProtocols,
     notifications,
+    appointments,
   };
-  const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):row[key]===value));
+  const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):operator==='gte'?Date.parse(row[key])>=Date.parse(value):operator==='lt'?Date.parse(row[key])<Date.parse(value):row[key]===value));
   return {
     auth:{getUser:async token=>token==='valid'?{data:{user},error:null}:{data:{user:null},error:new Error('invalid token')}},
     from(table){
-      const state={table,values:null,filters:[],operation:'select',limit:null};
+      const state={table,values:null,filters:[],operation:'select',limit:null,orderBy:null};
       const tableRows=rowsByTable[table]??[];
       const matching=()=>matchingRows(tableRows,state.filters);
       const api={
         select(){return api},
         eq(k,v){state.filters.push([k,v,'eq']);return api},
         in(k,values){state.filters.push([k,values,'in']);return api},
+        gte(k,v){state.filters.push([k,v,'gte']);return api},
+        lt(k,v){state.filters.push([k,v,'lt']);return api},
         ilike(){return api},
-        order(){return api},
+        order(key,{ascending=true}={}){state.orderBy={key,ascending};return api},
         limit(n){state.limit=n;return api},
         maybeSingle:async()=>{
           const operationError=operationErrors[state.table]?.[state.operation];
@@ -55,6 +58,7 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
           let data=matching();
           if(state.operation==='update')for(const row of data)Object.assign(row,state.values);
           if(state.operation==='delete'){for(const row of data)tableRows.splice(tableRows.indexOf(row),1);data=[]}
+          if(state.orderBy){const {key,ascending}=state.orderBy;data=[...data].sort((a,b)=>ascending?String(a[key]).localeCompare(String(b[key])):String(b[key]).localeCompare(String(a[key])))}
           if(state.limit!==null)data=data.slice(0,state.limit);
           return Promise.resolve({data,error:null}).then(resolve);
         }
@@ -303,6 +307,40 @@ test('notification routes reject authenticated users without organization member
   try{
     const response=await request(s.baseUrl,'/notifications',{headers:{Authorization:'Bearer valid'}});
     assert.equal(response.status,403);
+  }finally{await s.close()}
+});
+
+test('upcoming appointment reminders require membership and only return the current professional within 24 hours',async()=>{
+  const now=Date.now();
+  const own={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',patient_id:'88888888-8888-4888-8888-888888888888',starts_at:new Date(now+60*60*1000).toISOString(),status:'scheduled',notes:'Conteúdo clínico que não pode sair'};
+  const rows=[
+    own,
+    {...own,id:'44444444-4444-4444-8444-444444444444',starts_at:new Date(now+23*60*60*1000).toISOString(),status:'confirmed'},
+    {...own,id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',starts_at:new Date(now+2*60*60*1000).toISOString(),status:'rescheduled'},
+    {...own,id:'55555555-5555-4555-8555-555555555555',starts_at:new Date(now+25*60*60*1000).toISOString()},
+    {...own,id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',starts_at:new Date(now+24*60*60*1000+60_000).toISOString()},
+    {...own,id:'66666666-6666-4666-8666-666666666666',starts_at:new Date(now-60_000).toISOString()},
+    {...own,id:'77777777-7777-4777-8777-777777777777',professional_id:'55555555-5555-4555-8555-555555555555'},
+    {...own,id:'99999999-9999-4999-8999-999999999999',organization_id:'77777777-7777-4777-8777-777777777777'},
+    {...own,id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',status:'completed'},
+  ];
+  const s=await startServer({appointments:rows});
+  try{
+    assert.equal((await request(s.baseUrl,'/notifications/upcoming-appointments')).status,401);
+    const response=await request(s.baseUrl,'/notifications/upcoming-appointments',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    const {appointments}=await response.json();
+    assert.deepEqual(appointments.map(item=>item.id),[own.id,'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','44444444-4444-4444-8444-444444444444']);
+    assert.deepEqual(Object.keys(appointments[0]).sort(),['id','starts_at','status']);
+    assert.equal(JSON.stringify(appointments).includes('patient_id'),false);
+    assert.equal(JSON.stringify(appointments).includes('Conteúdo clínico'),false);
+  }finally{await s.close()}
+});
+
+test('upcoming appointment reminders reject a user without organization membership',async()=>{
+  const s=await startServer({memberships:[]});
+  try{
+    assert.equal((await request(s.baseUrl,'/notifications/upcoming-appointments',{headers:{Authorization:'Bearer valid'}})).status,403);
   }finally{await s.close()}
 });
 

@@ -207,4 +207,8 @@ button:disabled{cursor:wait;opacity:.7}
 .notification-actions .secondary-button{color:#17352a!important;background:#eef3ef!important;border:1px solid #d5ddd8!important}
 .notification-actions .text-button{min-height:40px;border:0;padding:0 8px;background:transparent;color:#657168;text-decoration:underline}
 .completed-label,.empty-notifications{color:#69756e;font-size:13px}
+.upcoming-appointments h3{margin:0}
+.upcoming-list{list-style:none;margin:0;padding:0}
+.upcoming-item{display:flex;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid #edf0ee;color:#526057;font-size:13px}
+.upcoming-item time{color:#17352a;font-weight:700}
 @media(max-width:560px){.notification-fields{grid-template-columns:1fr}.notification-item{align-items:flex-start;flex-direction:column}.notification-actions{justify-content:flex-start}.notification-list-heading{align-items:flex-start;flex-direction:column}}

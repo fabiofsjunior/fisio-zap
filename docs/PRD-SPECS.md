@@ -599,7 +599,7 @@ O MVP funcional do produto deve priorizar:
 | S2 | Pacientes | próxima |
 | S3 | Agenda e rotina | planejada |
 | S4 | Atendimento e evolução | planejada |
-| S5 | Notificações | planejada |
+| S5 | Notificações | em andamento — S5.1 em `TESTES`; S5.2 em desenvolvimento |
 | S6 | Financeiro | planejada |
 | S7 | Assistente IA | planejada |
 | S8 | WhatsApp | planejada |
