@@ -30,13 +30,16 @@ Transformar agendamentos em atendimentos documentados, com histórico clínico o
 - [x] S3 integrada na main.
 - [x] Branch exclusiva S4 criada.
 - [x] Escopo e critérios de aceite definidos.
-- [ ] S4.1 implementada e validada.
-- [ ] S4.2 implementada e validada.
-- [ ] S4.3 implementada e validada.
-- [ ] S4.4 validada; PR aprovada e mergeada.
+- [x] S4.1 implementada; migration, constraints, triggers e RLS passaram nas validações automatizadas.
+- [x] S4.2 implementada; APIs passaram na suíte automatizada.
+- [x] S4.3 implementada; build de produção passou. Teste funcional no navegador ainda pendente.
+- [x] S4.4: CI automatizado 4/4 verde e PR #17 integrada em `TESTES`.
+- [ ] Homologação funcional local da S4 pelo proprietário.
+- [ ] QA funcional da S3 — issue #11 continua aberta.
 
-## Evidências locais — 09/10/2026
-- S4.1: migration e RLS aplicadas em PostgreSQL embutido isolado; 30 verificações sintéticas de constraints, triggers e acesso por organização/profissional passaram. O teste oficial `supabase test db --local` ainda depende do CI/Supabase local.
-- S4.2: suíte automatizada do backend passou com 29/29 testes no head integrado.
-- S4.3: `npm run build` passou; revisão estática confirmou a proteção contra respostas atrasadas após troca de organização/dia. Não houve teste funcional no navegador.
-- S4.4: aguardando CI oficial, execução pgTAP pelo Supabase CLI e homologação funcional. A pendência de QA da S3 na issue #11 continua aberta.
+## Evidências — 09/10/2026
+- S4.1: 30 verificações sintéticas de constraints, triggers e RLS passaram em PostgreSQL embutido isolado. No CI oficial, o reset das migrations, o lint do schema, 19 testes pgTAP e o job de RLS com Supabase local passaram.
+- S4.2: `npm test` passou com 29/29 testes localmente e no job de backend do CI.
+- S4.3: `npm run build` passou; revisão estática cobriu respostas atrasadas após troca de organização/dia. O fluxo ainda aguarda teste funcional no navegador.
+- S4.4: workflow CI run #153 passou em todos os quatro jobs (backend, web, database e RLS). A PR #17 foi integrada em `TESTES` pelo commit `94bc8d79c4b6939ff123256677576f00e61f9721`; o commit de merge não alterou o tree validado no head da PR.
+- A homologação pelo proprietário não foi concluída. A issue #11 da S3 permanece aberta. Nenhuma migration remota foi aplicada e nenhum Preview Deployment foi ativado.
