@@ -13,6 +13,7 @@ import { getLocalDayRange } from '@/app/lib/agenda-date-range.mjs';
 
 type MessageAttachment = { name: string; size: number; mime: string; kind: 'audio' | 'image' | 'document'; url: string };
 type Message = { id: number; role: 'user' | 'assistant'; text: string; mode?: 'demo' | 'read_only' | 'attachment_receipt'; attachment?: MessageAttachment };
+type TranscriptionStatus = 'checking' | 'enabled' | 'disabled' | 'error';
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_CONVERSATION_ATTACHMENT_BYTES = 30 * 1024 * 1024;
@@ -36,6 +37,8 @@ export default function FisioShell({ email, role, organizationId, userId }: { em
   const [messages, setMessages] = useState<Message[]>([]);
   const [sending, setSending] = useState(false);
   const [attachmentUsage, setAttachmentUsage] = useState({ bytes: 0, count: 0 });
+  const [transcribing, setTranscribing] = useState(false);
+  const [transcriptionStatusState, setTranscriptionStatusState] = useState<{ organizationId: string; userId: string; value: TranscriptionStatus }>({ organizationId, userId, value: 'checking' });
   const [error, setError] = useState('');
   const [testResult, setTestResult] = useState('');
   const [testLoading, setTestLoading] = useState(false);
@@ -44,12 +47,26 @@ export default function FisioShell({ email, role, organizationId, userId }: { em
   const mountedRef = useRef(false);
   const loggingOutRef = useRef(false);
   const activeRequestRef = useRef<AbortController | null>(null);
+  const transcriptionStatusControllerRef = useRef<AbortController | null>(null);
+  const transcriptionControllerRef = useRef<AbortController | null>(null);
+  const transcriptionStatusGenerationRef = useRef(0);
+  const transcriptionGenerationRef = useRef(0);
   const attachmentUrlsRef = useRef(new Set<string>());
   const attachmentUsageRef = useRef({ bytes: 0, count: 0 });
   const scopeRef = useRef({ organizationId, userId });
   const sessionScopeRef = useRef({ organizationId, userId });
   const [messageScope, setMessageScope] = useState({ organizationId, userId });
   scopeRef.current = { organizationId, userId };
+  const transcriptionStatus = transcriptionStatusState.organizationId === organizationId && transcriptionStatusState.userId === userId
+    ? transcriptionStatusState.value
+    : 'checking';
+
+  function cancelTranscription() {
+    transcriptionGenerationRef.current += 1;
+    transcriptionControllerRef.current?.abort();
+    transcriptionControllerRef.current = null;
+    if (mountedRef.current) setTranscribing(false);
+  }
 
   function clearConversationAttachments() {
     attachmentUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
@@ -65,6 +82,9 @@ export default function FisioShell({ email, role, organizationId, userId }: { em
       mountedRef.current = false;
       activeRequestRef.current?.abort();
       activeRequestRef.current = null;
+      transcriptionStatusControllerRef.current?.abort();
+      transcriptionStatusControllerRef.current = null;
+      cancelTranscription();
       attachmentUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
       attachmentUrlsRef.current.clear();
       attachmentUsageRef.current = { bytes: 0, count: 0 };
@@ -76,6 +96,9 @@ export default function FisioShell({ email, role, organizationId, userId }: { em
     if (previousScope.organizationId !== organizationId || previousScope.userId !== userId) {
       activeRequestRef.current?.abort();
       activeRequestRef.current = null;
+      transcriptionStatusControllerRef.current?.abort();
+      transcriptionStatusControllerRef.current = null;
+      cancelTranscription();
       setSending(false);
       attachmentUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
       attachmentUrlsRef.current.clear();
@@ -87,6 +110,94 @@ export default function FisioShell({ email, role, organizationId, userId }: { em
     }
     sessionScopeRef.current = { organizationId, userId };
   }, [organizationId, userId]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const requestId = ++transcriptionStatusGenerationRef.current;
+    const requestScope = { organizationId, userId };
+    transcriptionStatusControllerRef.current = controller;
+    setTranscriptionStatusState({ ...requestScope, value: 'checking' });
+    void (async () => {
+      try {
+        const client = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
+        const { data: { session } } = await client.auth.getSession();
+        if (!session?.access_token) throw new Error('Sessão ausente');
+        if (controller.signal.aborted || !mountedRef.current || transcriptionStatusGenerationRef.current !== requestId || scopeRef.current.organizationId !== organizationId || scopeRef.current.userId !== userId) return;
+        const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/chat/transcription-status`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+            'X-FisioZap-Organization-Id': organizationId,
+          },
+          signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || typeof payload?.enabled !== 'boolean') throw new Error('Não foi possível verificar a disponibilidade da transcrição.');
+        if (!mountedRef.current || controller.signal.aborted || transcriptionStatusGenerationRef.current !== requestId || scopeRef.current.organizationId !== organizationId || scopeRef.current.userId !== userId) return;
+        setTranscriptionStatusState({ ...requestScope, value: payload.enabled ? 'enabled' : 'disabled' });
+      } catch (cause) {
+        if (controller.signal.aborted || !mountedRef.current || transcriptionStatusGenerationRef.current !== requestId || scopeRef.current.organizationId !== organizationId || scopeRef.current.userId !== userId) return;
+        setTranscriptionStatusState({ ...requestScope, value: 'error' });
+      }
+    })();
+    return () => {
+      controller.abort();
+      if (transcriptionStatusControllerRef.current === controller) transcriptionStatusControllerRef.current = null;
+    };
+  }, [organizationId, userId]);
+
+  async function transcribeAudio(file: File): Promise<string> {
+    if (transcriptionStatus !== 'enabled') throw new Error('A transcrição está indisponível no momento.');
+    const mime = getChatFileMimeType(file);
+    if (!mime.startsWith('audio/')) throw new Error('Selecione um arquivo de áudio para transcrever.');
+    if (!file.size || file.size > MAX_ATTACHMENT_BYTES) throw new Error('O áudio deve ter entre 1 byte e 10 MB.');
+
+    cancelTranscription();
+    const requestId = transcriptionGenerationRef.current;
+    const requestScope = { organizationId, userId };
+    const controller = new AbortController();
+    transcriptionControllerRef.current = controller;
+    setTranscribing(true);
+    const isCurrent = () => mountedRef.current
+      && transcriptionControllerRef.current === controller
+      && transcriptionGenerationRef.current === requestId
+      && !controller.signal.aborted
+      && !loggingOutRef.current
+      && scopeRef.current.organizationId === requestScope.organizationId
+      && scopeRef.current.userId === requestScope.userId;
+
+    try {
+      const client = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
+      const { data: { session } } = await client.auth.getSession();
+      if (!session?.access_token) throw new Error('Sessão ausente');
+      if (!isCurrent()) throw new DOMException('Transcrição cancelada.', 'AbortError');
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/chat/transcriptions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': mime,
+          Authorization: `Bearer ${session.access_token}`,
+          'X-FisioZap-Organization-Id': organizationId,
+          'X-FisioZap-File-Name': encodeURIComponent(file.name),
+          'x-transcription-consent': 'true',
+        },
+        body: file,
+        signal: controller.signal,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Não foi possível transcrever o áudio.');
+      if (!isCurrent()) throw new DOMException('Transcrição cancelada.', 'AbortError');
+      if (payload?.mode !== 'transcription' || typeof payload.text !== 'string' || !payload.text.trim()) {
+        throw new Error('O serviço não retornou uma transcrição válida.');
+      }
+      if (payload.text.length > 4000) throw new Error('A transcrição excede o limite de 4.000 caracteres.');
+      return payload.text;
+    } finally {
+      if (transcriptionControllerRef.current === controller) {
+        transcriptionControllerRef.current = null;
+        if (mountedRef.current) setTranscribing(false);
+      }
+    }
+  }
 
   async function sendMessage(text: string, file?: File) {
     const messageText = text.trim();
@@ -198,6 +309,9 @@ export default function FisioShell({ email, role, organizationId, userId }: { em
     loggingOutRef.current = true;
     activeRequestRef.current?.abort();
     activeRequestRef.current = null;
+    transcriptionStatusControllerRef.current?.abort();
+    transcriptionStatusControllerRef.current = null;
+    cancelTranscription();
     clearConversationAttachments();
     const client = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
     await client.auth.signOut(); window.location.href = '/login';
@@ -264,5 +378,5 @@ export default function FisioShell({ email, role, organizationId, userId }: { em
 
   const testsScreen = <section className="module-screen"><button type="button" className="back-button" onClick={() => setTab('panel')}>← Voltar ao painel</button><div className="panel-heading"><div><span className="eyebrow">ADMINISTRAÇÃO</span><h2>Central de testes</h2><p>Ferramentas para validar a aplicação e preparar usuários de teste.</p></div><span className="demo-badge">Somente owner</span></div><div className="module-actions"><button type="button" className="action-card" onClick={() => void runSmokeTest()} disabled={testLoading}><strong>{testLoading ? 'Executando…' : '🩺 Rodar smoke test'}</strong><span>Supabase → Next.js → backend → /chat</span></button><button type="button" className="action-card" onClick={() => void createTestUser()} disabled={createLoading}><strong>{createLoading ? 'Criando…' : '👤 Criar usuário de teste'}</strong><span>Gera e-mail e senha aleatórios</span></button><div className="panel notice"><strong>▶️ Front + Back</strong><p>O ambiente local é iniciado pelo comando <code>npm run dev</code>, que atualiza a branch atual com <code>git pull --ff-only</code>, inicia backend e frontend no mesmo terminal e abre o navegador.</p></div></div>{testResult && <div className="panel notice"><strong>Resultado</strong><p>{testResult}</p></div>}{testUser && <div className="panel notice"><strong>Credencial gerada</strong><p><strong>Usuário:</strong> {testUser.email}<br /><strong>Senha:</strong> {testUser.password}<br /><strong>Perfil:</strong> {testUser.role}</p><p>Use esta credencial no navegador em /login. A senha será exibida somente nesta sessão.</p></div>}</section>;
 
-  return <main className="app-shell"><header className="app-header"><div><span className="eyebrow">FISIOZAP</span><h1>{tab === 'chat' ? 'Assistente' : tab === 'tests' ? 'Testes' : 'Painel'}</h1></div><div className="account"><span title={email ?? undefined}>{email ?? 'Profissional autenticado'} · {role}</span><button type="button" onClick={logout}>Sair</button></div></header>{tab === 'chat' ? <section className="chat-panel" aria-label="Chat do FisioZap"><div className="chat-intro"><span className="eyebrow">ASSISTENTE OPERACIONAL</span><h2>Como posso ajudar hoje?</h2><p>Consulto sua agenda, suas pendências próprias e o resumo financeiro do mês. Respostas somente leitura, sem conteúdo clínico. Arquivos ficam disponíveis apenas nesta sessão; transcrição e análise não estão disponíveis.</p></div><div className="messages" aria-live="polite">{visibleMessages.length === 0 && <div className="empty-state"><strong>Comece uma conversa</strong><span>Ex.: “O que tenho hoje?”, “Quais são minhas pendências?” ou “Resumo financeiro deste mês”.</span></div>}{visibleMessages.map((message) => <div key={message.id} className={`message ${message.role}`}>{message.text && <span>{message.text}</span>}{message.attachment && renderMessageAttachment(message.attachment)}{message.mode === 'demo' && <small>Resposta de demonstração</small>}{message.mode === 'read_only' && <small>Consulta operacional · somente leitura</small>}{message.mode === 'attachment_receipt' && <small>Arquivo recebido · disponível nesta sessão</small>}</div>)}{sending && <div className="message assistant">Consultando…</div>}</div>{error && <div className="chat-error" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')}>Fechar</button></div>}<ChatComposer key={`${organizationId}:${userId}`} onSend={sendMessage} sending={sending} maxAttachmentBytes={attachmentUsage.count >= MAX_CONVERSATION_ATTACHMENTS ? 0 : Math.min(MAX_ATTACHMENT_BYTES, MAX_CONVERSATION_ATTACHMENT_BYTES - attachmentUsage.bytes)} /></section> : tab === 'tests' ? testsScreen : activeModule ? renderModuleScreen() : <section><div className="panel-heading"><div><span className="eyebrow">CENTRAL DO PROFISSIONAL</span><h2>Seu trabalho em um só lugar</h2></div><span className="demo-badge">Perfil: {role}</span></div><div className="module-grid">{visibleModules.map(([icon, title, description]) => <button type="button" className="module-card" key={title} onClick={() => openModule(title)}><span className="module-icon">{icon}</span><h3>{title}</h3><p>{description}</p><small>Em preparação</small></button>)}{role === 'owner' && <button type="button" className="module-card" onClick={openTests}><span className="module-icon">🧪</span><h3>Testes</h3><p>Diagnóstico e usuários temporários para validar o ambiente.</p><small>Somente owner</small></button>}</div><div className="panel notice"><strong>Privacidade primeiro</strong><p>Seu perfil controla quais módulos aparecem. Dados clínicos só entram quando identidade, organização, profissional e autorização estiverem validados.</p></div></section>}<nav className="bottom-nav" aria-label="Navegação principal"><button type="button" className={tab === 'chat' ? 'active' : ''} onClick={() => setTab('chat')}><span>💬</span>Chat</button><button type="button" className={tab === 'panel' ? 'active' : ''} onClick={() => { setTab('panel'); setActiveModule(null); }}><span>▦</span>Painel</button>{role === 'owner' && <button type="button" className={tab === 'tests' ? 'active' : ''} onClick={openTests}><span>🧪</span>Testes</button>}</nav></main>;
+  return <main className="app-shell"><header className="app-header"><div><span className="eyebrow">FISIOZAP</span><h1>{tab === 'chat' ? 'Assistente' : tab === 'tests' ? 'Testes' : 'Painel'}</h1></div><div className="account"><span title={email ?? undefined}>{email ?? 'Profissional autenticado'} · {role}</span><button type="button" onClick={logout}>Sair</button></div></header>{tab === 'chat' ? <section className="chat-panel" aria-label="Chat do FisioZap"><div className="chat-intro"><span className="eyebrow">ASSISTENTE OPERACIONAL</span><h2>Como posso ajudar hoje?</h2><p>Consulto sua agenda, suas pendências próprias e o resumo financeiro do mês. Respostas somente leitura, sem conteúdo clínico. Arquivos ficam disponíveis apenas nesta sessão; transcrições de áudio exigem confirmação explícita e podem gerar cobrança.</p></div><div className="messages" aria-live="polite">{visibleMessages.length === 0 && <div className="empty-state"><strong>Comece uma conversa</strong><span>Ex.: “O que tenho hoje?”, “Quais são minhas pendências?” ou “Resumo financeiro deste mês”.</span></div>}{visibleMessages.map((message) => <div key={message.id} className={`message ${message.role}`}>{message.text && <span>{message.text}</span>}{message.attachment && renderMessageAttachment(message.attachment)}{message.mode === 'demo' && <small>Resposta de demonstração</small>}{message.mode === 'read_only' && <small>Consulta operacional · somente leitura</small>}{message.mode === 'attachment_receipt' && <small>Arquivo recebido · disponível nesta sessão</small>}</div>)}{sending && <div className="message assistant">Consultando…</div>}</div>{error && <div className="chat-error" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')}>Fechar</button></div>}<ChatComposer key={`${organizationId}:${userId}`} onSend={sendMessage} sending={sending} maxAttachmentBytes={attachmentUsage.count >= MAX_CONVERSATION_ATTACHMENTS ? 0 : Math.min(MAX_ATTACHMENT_BYTES, MAX_CONVERSATION_ATTACHMENT_BYTES - attachmentUsage.bytes)} transcriptionStatus={transcriptionStatus} onTranscribe={transcribeAudio} onCancelTranscription={cancelTranscription} transcribing={transcribing} /></section> : tab === 'tests' ? testsScreen : activeModule ? renderModuleScreen() : <section><div className="panel-heading"><div><span className="eyebrow">CENTRAL DO PROFISSIONAL</span><h2>Seu trabalho em um só lugar</h2></div><span className="demo-badge">Perfil: {role}</span></div><div className="module-grid">{visibleModules.map(([icon, title, description]) => <button type="button" className="module-card" key={title} onClick={() => openModule(title)}><span className="module-icon">{icon}</span><h3>{title}</h3><p>{description}</p><small>Em preparação</small></button>)}{role === 'owner' && <button type="button" className="module-card" onClick={openTests}><span className="module-icon">🧪</span><h3>Testes</h3><p>Diagnóstico e usuários temporários para validar o ambiente.</p><small>Somente owner</small></button>}</div><div className="panel notice"><strong>Privacidade primeiro</strong><p>Seu perfil controla quais módulos aparecem. Dados clínicos só entram quando identidade, organização, profissional e autorização estiverem validados.</p></div></section>}<nav className="bottom-nav" aria-label="Navegação principal"><button type="button" className={tab === 'chat' ? 'active' : ''} onClick={() => setTab('chat')}><span>💬</span>Chat</button><button type="button" className={tab === 'panel' ? 'active' : ''} onClick={() => { setTab('panel'); setActiveModule(null); }}><span>▦</span>Painel</button>{role === 'owner' && <button type="button" className={tab === 'tests' ? 'active' : ''} onClick={openTests}><span>🧪</span>Testes</button>}</nav></main>;
 }

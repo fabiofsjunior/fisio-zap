@@ -10,6 +10,7 @@ import {
   MAX_CHAT_ATTACHMENT_BYTES,
   normalizeAttachmentMime,
 } from './chat-attachment.js';
+import { getTranscriptionConfig, MAX_TRANSCRIPTION_TEXT_CHARS, transcribeWithOpenAI } from './chat-transcription.js';
 
 const port = Number(process.env.PORT || 3001);
 const frontendOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
@@ -88,6 +89,10 @@ function isChatAttachmentPath(path) {
   return /^\/chat\/attachments\/?$/i.test(path);
 }
 
+function isChatTranscriptionPath(path) {
+  return /^\/chat\/transcriptions\/?$/i.test(path);
+}
+
 function discardChatAttachmentBody(req) {
   if (Buffer.isBuffer(req.body)) req.body.fill(0);
   req.body = undefined;
@@ -151,20 +156,23 @@ function sanitizeFinancialEntry(entry) {
   };
 }
 
-export function createApp({ supabaseClientFactory = createClient, now = () => new Date() } = {}) {
+export function createApp({ supabaseClientFactory = createClient, now = () => new Date(), transcriptionProvider = transcribeWithOpenAI, transcriptionConfig = getTranscriptionConfig, transcriptionNow = () => Date.now() } = {}) {
   const app = express();
   const rateBuckets = new Map();
+  const transcriptionQuotaBuckets = new Map();
+  let activeTranscriptions = 0;
+  const maxActiveTranscriptions = 2;
   const jsonBodyParser = express.json({ limit: '64kb' });
   app.disable('x-powered-by');
   app.use((req, res, next) => {
-    if (req.method === 'POST' && isChatAttachmentPath(req.path)) return next();
+    if (req.method === 'POST' && (isChatAttachmentPath(req.path) || isChatTranscriptionPath(req.path))) return next();
     return jsonBodyParser(req, res, next);
   });
 
   app.use((req, res, next) => {
     const origin = req.headers.origin;
     if (origin === frontendOrigin) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin'); }
-    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-FisioZap-Organization-Id, X-FisioZap-File-Name');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-FisioZap-Organization-Id, X-FisioZap-File-Name, X-Transcription-Consent');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
@@ -1043,10 +1051,123 @@ export function createApp({ supabaseClientFactory = createClient, now = () => ne
     };
     discardBytes();
     return res.json({
-      message: 'Arquivo/Áudio recebido nesta sessão. Transcrição e análise de anexos ainda não estão disponíveis.',
+      message: 'Arquivo/Áudio recebido nesta sessão. Nenhuma transcrição ou análise foi realizada.',
       mode: 'attachment_receipt',
       attachment,
     });
+  });
+
+  function releaseTranscriptionSlot(req) {
+    if (req.transcriptionUploadDeadline) {
+      clearTimeout(req.transcriptionUploadDeadline);
+      req.transcriptionUploadDeadline = null;
+    }
+    req.setTimeout?.(0);
+    if (req.transcriptionSlotHeld) {
+      req.transcriptionSlotHeld = false;
+      activeTranscriptions = Math.max(0, activeTranscriptions - 1);
+    }
+  }
+
+  function consumeTranscriptionQuota(req) {
+    const current = transcriptionNow();
+    for (const [key, bucket] of transcriptionQuotaBuckets) {
+      if (current - bucket.startedAt >= 60_000) transcriptionQuotaBuckets.delete(key);
+    }
+    const key = `${req.user.id}:${req.transcriptionOrganizationId}`;
+    const bucket = transcriptionQuotaBuckets.get(key);
+    if (!bucket || current - bucket.startedAt >= 60_000) {
+      if (transcriptionQuotaBuckets.size >= 10_000) return false;
+      transcriptionQuotaBuckets.set(key, { startedAt: current, count: 1 });
+      return true;
+    }
+    if (bucket.count >= 3) return false;
+    bucket.count += 1;
+    return true;
+  }
+
+  app.get('/chat/transcription-status', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res);
+    if (!membership) return;
+    const config = transcriptionConfig();
+    return res.json({ enabled: Boolean(config?.enabled) });
+  });
+
+  app.post('/chat/transcriptions', rateLimit, requireAuth, async (req, res, next) => {
+    const membership = await appointmentScope(req, res);
+    if (!membership) return;
+    const config = transcriptionConfig();
+    if (activeTranscriptions >= maxActiveTranscriptions) {
+      return res.status(429).json({ error: 'Muitas transcrições em andamento. Tente novamente em instantes.' });
+    }
+    activeTranscriptions += 1;
+    req.transcriptionSlotHeld = true;
+    req.transcriptionConfig = config;
+    req.transcriptionOrganizationId = membership.organization_id;
+    req.transcriptionAbortController = new AbortController();
+    req.once('aborted', () => {
+      req.transcriptionAbortController?.abort();
+      releaseTranscriptionSlot(req);
+    });
+    res.once('close', () => {
+      if (!res.writableEnded) req.transcriptionAbortController?.abort();
+    });
+    req.setTimeout(30_000, () => {
+      req.transcriptionAbortController?.abort();
+      releaseTranscriptionSlot(req);
+      req.destroy();
+    });
+    req.transcriptionUploadDeadline = setTimeout(() => {
+      req.transcriptionAbortController?.abort();
+      releaseTranscriptionSlot(req);
+      req.destroy();
+    }, 60_000);
+    return next();
+  }, express.raw({ type: () => true, limit: MAX_CHAT_ATTACHMENT_BYTES, inflate: false }), async (req, res) => {
+    if (req.transcriptionUploadDeadline) {
+      clearTimeout(req.transcriptionUploadDeadline);
+      req.transcriptionUploadDeadline = null;
+    }
+    req.setTimeout(0);
+    const bytes = req.body;
+    const reject = (status, message) => {
+      discardChatAttachmentBody(req);
+      releaseTranscriptionSlot(req);
+      return res.status(status).json({ error: message });
+    };
+    try {
+      const consentHeaders = rawHeaderValues(req, 'x-transcription-consent');
+      if (consentHeaders.length !== 1 || consentHeaders[0].trim().toLowerCase() !== 'true') {
+        return reject(422, 'Confirme o consentimento para transcrever este áudio.');
+      }
+      const { enabled, apiKey, model } = req.transcriptionConfig ?? {};
+      if (!enabled || !apiKey || !model) return reject(503, 'A transcrição está indisponível no momento.');
+      if (!Buffer.isBuffer(bytes) || bytes.length === 0) return reject(400, 'O áudio está vazio ou inválido.');
+      const contentTypes = rawHeaderValues(req, 'content-type');
+      const encodedNames = rawHeaderValues(req, 'x-fisiozap-file-name');
+      if (contentTypes.length !== 1 || encodedNames.length !== 1) return reject(400, 'Cabeçalhos do áudio inválidos.');
+      const mime = normalizeAttachmentMime(contentTypes[0]);
+      if (!mime || attachmentKind(mime) !== 'audio') return reject(415, 'Tipo de áudio não aceito.');
+      const name = decodeSafeAttachmentName(encodedNames[0]);
+      if (!name) return reject(422, 'Nome de arquivo inválido.');
+      if (!attachmentNameMatchesMime(name, mime)) return reject(422, 'O nome do arquivo não corresponde ao tipo informado.');
+      if (!matchesAttachmentSignature(mime, bytes)) return reject(422, 'O conteúdo não corresponde ao tipo de áudio informado.');
+      if (!consumeTranscriptionQuota(req)) return reject(429, 'Limite de três transcrições por minuto atingido. Tente novamente mais tarde.');
+
+      const extension = name.split('.').at(-1).toLowerCase();
+      const safeProviderFilename = `audio.${extension}`;
+      const text = await transcriptionProvider({ bytes, mime, filename: safeProviderFilename, apiKey, model, signal: req.transcriptionAbortController?.signal });
+      if (typeof text !== 'string' || !text.trim() || text.length > MAX_TRANSCRIPTION_TEXT_CHARS) {
+        return reject(502, 'Não foi possível concluir a transcrição do áudio.');
+      }
+      discardChatAttachmentBody(req);
+      return res.json({ text, mode: 'transcription' });
+    } catch {
+      discardChatAttachmentBody(req);
+      return res.status(502).json({ error: 'Não foi possível concluir a transcrição do áudio.' });
+    } finally {
+      releaseTranscriptionSlot(req);
+    }
   });
 
   app.post('/chat', rateLimit, requireAuth, async (req, res) => {
@@ -1132,6 +1253,16 @@ export function createApp({ supabaseClientFactory = createClient, now = () => ne
   });
 
   app.use((err, req, res, _next) => {
+    if (isChatTranscriptionPath(req.path)) {
+      discardChatAttachmentBody(req);
+      releaseTranscriptionSlot(req);
+      if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Áudio excede o limite de 10 MiB.' });
+      if (err?.type === 'encoding.unsupported') return res.status(415).json({ error: 'Codificação do áudio não aceita.' });
+      if (['entity.parse.failed', 'request.aborted', 'request.size.invalid'].includes(err?.type)) {
+        return res.status(400).json({ error: 'O corpo binário do áudio é inválido.' });
+      }
+      return res.status(500).json({ error: 'Não foi possível receber o áudio.' });
+    }
     if (isChatAttachmentPath(req.path)) {
       discardChatAttachmentBody(req);
       if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Arquivo excede o limite de 10 MiB.' });

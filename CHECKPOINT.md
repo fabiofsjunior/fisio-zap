@@ -1,13 +1,17 @@
 # FisioZap — Checkpoint global para agentes
 
 **Branch obrigatória:** `feature/* → TESTES → main`
-**Estado observado em 10/10/2026:** S6.1 e S7.1 integradas em `TESTES`; homologações funcionais locais do proprietário pendentes.
+**Estado observado em 10/10/2026:** S6.1 e S7.1–S7.3 integradas em `TESTES`; S7.4 em implementação; homologações funcionais locais do proprietário pendentes.
 
 ## Checkpoint atual — 10/10/2026
+- S7.4: transcrição opcional de áudio em `feature/chat-audio-transcription`, baseada em `f18a491`; issue #34 aberta. Recurso desativado por padrão, integração server-only com OpenAI, consentimento explícito e revisão do texto antes de envio. Nenhuma chamada real ao provedor nos testes. Roteiro/configuração em `docs/S7-TRANSCRICAO-AUDIO.md`. Validação local: backend 79/79, composer 19/19, guard 6/6, DST, TypeScript/build, sintaxe e diff aprovados; revisões independentes sem bloqueios. Integração condicionada ao CI oficial desta branch. Testes simulam o provedor e as APIs de mídia; integração real de sessão/status do shell e dispositivos depende da homologação.
+- Base remota confirmada: `TESTES` = `f18a491403cdb610353e6caa1fa8b6b781b3bd64`, merge da PR #33; CI #178 e pós-merge #179 aprovados. S7.2 foi integrada pela PR #31 em `36edc5b`, CI #176/#177 aprovados. Issues #30/#32 permanecem abertas para homologação. Não existem PRs abertas no início desta etapa.
+
+### Evidências das entregas anteriores
 - S7.3: áudio e anexos de sessão em `feature/chat-audio-attachments`, baseada em `36edc5b`; issue #32 aberta para homologação. Backend 69/69, interface 15/15 (DOM/MediaRecorder simulados), guard 6/6, DST, TypeScript/build, sintaxe e diff aprovados localmente. Revisões de Sakura QA e Shikamaru Segurança sem bloqueadores; integração condicionada ao CI oficial. Sem persistência, transcrição, interpretação de anexos ou alterações em banco remoto. Roteiro em `docs/S7-CHAT-AUDIO-ANEXOS.md`.
 - S7.2: resumo financeiro somente leitura em `feature/s7-financial-assistant`, baseada em `ee7cbbf`. Issue #30 permanece aberta para homologação funcional. Contrato e roteiro em `docs/S7-ASSISTENTE-FINANCEIRO.md`; integração condicionada ao CI e revisões. Nenhuma migration nova ou alteração em banco remoto.
 - Validação local S7.2: backend 64/64, guard local 6/6, teste DST, build web, sintaxe e diff aprovados. CI oficial da PR ainda deve ser consultado antes de integrar; não considerar essa evidência homologação funcional.
-- `TESTES` está em `31c5dc263c180bbdd12e60944e8e1b34d1c6f639`, após a integração da PR #28 (S7.1). CI da PR #28 #172 e pós-merge #173 aprovaram 4/4 jobs.
+- Base histórica da S7.1: `TESTES` estava em `31c5dc263c180bbdd12e60944e8e1b34d1c6f639`, após a integração da PR #28 (S7.1). CI da PR #28 #172 e pós-merge #173 aprovaram 4/4 jobs.
 - `main` permanece em `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`; não houve promoção para produção.
 - PR #26 foi integrada em `TESTES` no merge commit `20cfc9c45a2ccb0efbf4affcb7053c9672e6dd3e`. O CI #169 identificou um fixture RLS inválido; a correção foi validada no CI #170 (4/4) e no CI pós-merge #171 (4/4).
 - Issue #25 continua aberta para homologação funcional local do proprietário. S6.1 não alterou banco remoto.
@@ -16,7 +20,7 @@
 - Issue #27 permanece aberta para o proprietário testar localmente o fluxo do assistente e confirmar a homologação funcional.
 - Nenhuma migration ou alteração em banco remoto foi executada. Nenhum Preview Deployment foi ativado.
 - `main` permanece intacta.
-- Último CI concluído em `TESTES`: run #173, 4/4 jobs verdes (backend, web, database/pgTAP e RLS); run #172 da PR #28 também passou 4/4.
+- CI histórico da S7.1 em `TESTES`: run #173, 4/4 jobs verdes (backend, web, database/pgTAP e RLS); run #172 da PR #28 também passou 4/4.
 - Validação local S7.1: backend 57/57, guard local 6/6, sintaxe/diff, teste de faixa DST e build de produção web aprovados. Os testes do endpoint cobrem autenticação/membership, o dia atual, passado/futuro, dias locais de 23/24/25 horas, limites exclusivos e resultados vazios; backend executado com loopback restrito.
 - Revisões independentes de Sakura da QA e Shikamaru da Segurança não encontraram bloqueios; o relógio usado na validação é do servidor e os testes de datas são determinísticos.
 - A cópia local não tem Supabase CLI/Docker; os runs oficiais #172 e #173 validaram replay, pgTAP e RLS usando Supabase local no CI.
