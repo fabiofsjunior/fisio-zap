@@ -47,6 +47,52 @@ function centsToAmount(cents) {
   return `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`;
 }
 
+function normalizeAssistantMessage(message) {
+  return message.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function assistantIntent(message) {
+  const normalized = normalizeAssistantMessage(message);
+  if ((/\b(agenda|atendimento|atendimentos|compromisso|compromissos)\b/.test(normalized) && /\bhoje\b/.test(normalized)) || /\bo que (eu )?tenho hoje\b/.test(normalized)) {
+    return 'agenda_today';
+  }
+  if (/\b(pendencia|pendencias|tarefa|tarefas)\b/.test(normalized)) return 'own_pending_tasks';
+  return 'unsupported';
+}
+
+function zonedCalendarParts(instant, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(instant);
+  return Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, Number(part.value)]));
+}
+
+function isValidLocalDayRange(range, timeZone, currentInstant) {
+  if (!range || typeof range !== 'object' || Array.isArray(range) || Object.keys(range).length !== 2 || !range.from || !range.to) return false;
+  if (typeof timeZone !== 'string' || timeZone.length > 100) return false;
+  const now = currentInstant instanceof Date ? currentInstant : new Date(currentInstant);
+  if (!Number.isFinite(now.getTime())) return false;
+  if (typeof range.from !== 'string' || typeof range.to !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(range.from) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(range.to)) return false;
+  const from = new Date(range.from), to = new Date(range.to);
+  if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from.toISOString() !== range.from || to.toISOString() !== range.to) return false;
+  const duration = to.getTime() - from.getTime();
+  if (duration < 22 * 60 * 60 * 1000 || duration > 26 * 60 * 60 * 1000) return false;
+  try {
+    const start = zonedCalendarParts(from, timeZone), end = zonedCalendarParts(to, timeZone), current = zonedCalendarParts(now, timeZone);
+    const nextStartDay = new Date(Date.UTC(start.year, start.month - 1, start.day + 1)).toISOString().slice(0, 10);
+    const endDay = `${String(end.year).padStart(4, '0')}-${String(end.month).padStart(2, '0')}-${String(end.day).padStart(2, '0')}`;
+    const startDay = `${String(start.year).padStart(4, '0')}-${String(start.month).padStart(2, '0')}-${String(start.day).padStart(2, '0')}`;
+    const currentDay = `${String(current.year).padStart(4, '0')}-${String(current.month).padStart(2, '0')}-${String(current.day).padStart(2, '0')}`;
+    return start.hour === 0 && start.minute === 0 && start.second === 0
+      && end.hour === 0 && end.minute === 0 && end.second === 0
+      && nextStartDay === endDay && startDay === currentDay;
+  } catch {
+    return false;
+  }
+}
+
 function sanitizeFinancialEntry(entry) {
   return {
     id: entry.id,
@@ -60,7 +106,7 @@ function sanitizeFinancialEntry(entry) {
   };
 }
 
-export function createApp({ supabaseClientFactory = createClient } = {}) {
+export function createApp({ supabaseClientFactory = createClient, now = () => new Date() } = {}) {
   const app = express();
   const rateBuckets = new Map();
   app.disable('x-powered-by');
@@ -904,11 +950,50 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     return res.status(204).send();
   });
 
-  app.post('/chat', rateLimit, requireAuth, (req, res) => {
+  app.post('/chat', rateLimit, requireAuth, async (req, res) => {
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     if (!message) return res.status(400).json({ error: 'A mensagem é obrigatória.' });
     if (message.length > maxMessageLength) return res.status(422).json({ error: 'A mensagem deve ter no máximo ' + maxMessageLength + ' caracteres.' });
-    res.json({ message: 'Demonstração FisioZap: recebi sua mensagem, profissional. A integração de IA ainda não está ativa.', mode: 'demo' });
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    const intent = assistantIntent(message);
+
+    if (intent === 'agenda_today') {
+      const { today_range: dayRange, timezone } = req.body ?? {};
+      const requestNow = now();
+      if (!isValidLocalDayRange(dayRange, timezone, requestNow)) return res.status(422).json({ error: 'Informe o intervalo do dia atual no fuso horário selecionado.' });
+      const { data, error } = await req.supabase.from('appointments').select('starts_at,status')
+        .eq('organization_id', membership.organization_id).eq('professional_id', req.user.id)
+        .in('status', ['scheduled', 'confirmed', 'rescheduled'])
+        .gte('starts_at', dayRange.from).lt('starts_at', dayRange.to)
+        .order('starts_at', { ascending: true }).limit(20);
+      if (error) return res.status(400).json({ error: 'Não foi possível consultar sua agenda.' });
+      const appointments = data ?? [];
+      if (!appointments.length) return res.json({
+        message: 'Você não tem atendimentos previstos para hoje.', mode: 'read_only', intent,
+      });
+      const formatter = new Intl.DateTimeFormat('pt-BR', { timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+      const times = appointments.map(appointment => formatter.format(new Date(appointment.starts_at)));
+      const count = appointments.length >= 20 ? 'pelo menos 20' : String(appointments.length);
+      const noun = appointments.length === 1 ? 'atendimento' : 'atendimentos';
+      const timeSummary = appointments.length >= 20 ? ` Horários listados: ${times.join(', ')}.` : ` Às ${times.join(', ')}.`;
+      return res.json({ message: `Você tem ${count} ${noun} previstos para hoje.${timeSummary}`, mode: 'read_only', intent });
+    }
+
+    if (intent === 'own_pending_tasks') {
+      const { data, error } = await req.supabase.from('notifications').select('id')
+        .eq('organization_id', membership.organization_id).eq('user_id', req.user.id).eq('action_type', 'manual_task')
+        .in('status', ['unread', 'read']).limit(100);
+      if (error) return res.status(400).json({ error: 'Não foi possível consultar suas pendências.' });
+      const count = data?.length ?? 0;
+      const countLabel = count === 100 ? 'pelo menos 100' : String(count);
+      const noun = count === 1 ? 'pendência própria em aberto' : 'pendências próprias em aberto';
+      return res.json({ message: count ? `Você tem ${countLabel} ${noun}.` : 'Você não tem pendências próprias em aberto.', mode: 'read_only', intent });
+    }
+
+    return res.json({
+      message: 'Por enquanto posso consultar sua agenda de hoje ou contar suas pendências próprias. Não consulto informações clínicas nem executo ações.',
+      mode: 'read_only', intent,
+    });
   });
 
   app.use((err, _req, res, _next) => {

@@ -1,20 +1,22 @@
 # FisioZap — Checkpoint global para agentes
 
 **Branch obrigatória:** `feature/* → TESTES → main`
-**Estado observado em 10/10/2026:** S5 integrada em `TESTES`; S6.1 implementada em `feature/s6-financial-ledger`, aguardando CI e integração.
+**Estado observado em 10/10/2026:** S6.1 integrada em `TESTES`; S7.1 em desenvolvimento em `feature/s7-assistant-readonly`.
 
 ## Checkpoint atual — 10/10/2026
-- `TESTES` está em `98961459a3d1aa027ce90390be8d4361d425e6f1`, após a integração da PR #18 (checkpoint S4) a pedido do proprietário. A PR #18 tinha CI #155 aprovado em 4/4; CI pós-merge #168 também aprovou 4/4.
+- `TESTES` está em `20cfc9c45a2ccb0efbf4affcb7053c9672e6dd3e`, após a integração da PR #26 (S6.1). CI da PR #26 #170 e pós-merge #171 aprovaram 4/4 jobs.
 - `main` permanece em `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`; não houve promoção para produção.
-- PR #18 foi integrada em `TESTES` no commit `98961459a3d1aa027ce90390be8d4361d425e6f1`.
-- Issues #11, #13–#16, #21 e #23 continuam abertas; homologações S3/S4/S5 pelo proprietário seguem pendentes.
-- Issue #25 registra a S6.1 — livro-caixa. A PR #26 (`feature/s6-financial-ledger` → `TESTES`) está aberta sobre o commit `9896145`, sem merge. Manter a issue aberta até a homologação funcional do proprietário.
-- CI #169 da PR #26 aprovou backend, web e database/pgTAP; RLS falhou antes dos testes de policy porque o fixture estrangeiro violou a FK de membership em `patients`. A branch local corrige o fixture com um profissional membro somente da organização sintética estrangeira; revisões independentes de QA e Segurança não apontaram bloqueios.
+- PR #26 foi integrada em `TESTES` no merge commit `20cfc9c45a2ccb0efbf4affcb7053c9672e6dd3e`. O CI #169 identificou um fixture RLS inválido; a correção foi validada no CI #170 (4/4) e no CI pós-merge #171 (4/4).
+- Issue #25 continua aberta para homologação funcional local do proprietário. S6.1 não alterou banco remoto.
+- Issues #11, #13–#16, #21 e #23 continuam abertas; as homologações funcionais anteriores seguem pendentes.
+- Issue #27 define S7.1. A branch remota `feature/s7-assistant-readonly` parte de `20cfc9c`; a implementação local consulta somente a agenda do dia e as pendências próprias, sem escrita ou leitura de conteúdo clínico.
 - Nenhuma migration ou alteração em banco remoto foi executada. Nenhum Preview Deployment foi ativado.
 - `main` permanece intacta.
-- Último CI concluído no branch `TESTES`: run #168, 4/4 jobs verdes (backend, web, database/pgTAP e RLS). O run #169 da PR #26 segue como falha de RLS até a correção do fixture ser validada num novo run.
-- Validação local S6.1: backend 47/47, guard de mutações Supabase local, teste de faixa DST, verificações de sintaxe/diff e build de produção web aprovados. O sandbox bloqueia loopback sem permissão adicional; `npm test` passou com loopback local habilitado. Supabase CLI/Docker não estão disponíveis nesta cópia; replay de migration, pgTAP e RLS devem ser confirmados pelo CI.
-- Próximo passo: publicar a correção do fixture na PR #26, exigir 4/4 jobs verdes e integrar somente em `TESTES`; manter a issue #25 aberta para homologação funcional do proprietário.
+- Último CI concluído em `TESTES`: run #171, 4/4 jobs verdes (backend, web, database/pgTAP e RLS).
+- Validação local S7.1: backend 57/57, guard local 6/6, sintaxe/diff, teste de faixa DST e build de produção web aprovados. Os testes do endpoint cobrem autenticação/membership, o dia atual, passado/futuro, dias locais de 23/24/25 horas, limites exclusivos e resultados vazios; backend executado com loopback restrito.
+- Revisões independentes de Sakura da QA e Shikamaru da Segurança não encontraram bloqueios; o relógio usado na validação é do servidor e os testes de datas são determinísticos.
+- Supabase CLI/Docker não estão disponíveis nesta cópia; CI oficial com replay, pgTAP e RLS local ainda é necessário antes da integração.
+- Próximo passo: publicar somente as mudanças S7.1 na branch `feature/s7-assistant-readonly`, abrir PR para `TESTES`, aguardar CI 4/4 e manter issues #25 e #27 abertas até homologação do proprietário.
 
 ## Progresso em 06/10/2026
 - Login Supabase: validado e não alterado.

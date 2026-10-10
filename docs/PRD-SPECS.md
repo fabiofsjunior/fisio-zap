@@ -599,11 +599,11 @@ O MVP funcional do produto deve priorizar:
 | S1 | Autenticação/base operacional | validada em testes |
 | S1.5 | Segurança, RLS e reconciliação Supabase | em validação |
 | S2 | Pacientes | próxima |
-| S3 | Agenda e rotina | planejada |
-| S4 | Atendimento e evolução | planejada |
-| S5 | Notificações | integrada em `TESTES`; pendente de homologação funcional do proprietário |
-| S6 | Financeiro | em andamento — S6.1 em `feature/s6-financial-ledger`, issue #25 |
-| S7 | Assistente IA | planejada |
+| S3 | Agenda e rotina | integrada em `main`; issue #11 aberta para QA funcional |
+| S4 | Atendimento e evolução | integrada em `TESTES`; issues #13–#16 abertas para QA funcional |
+| S5 | Notificações | integrada em `TESTES`; issues #21 e #23 abertas para QA funcional |
+| S6 | Financeiro | S6.1 integrada em `TESTES`; issue #25 aberta para homologação do proprietário |
+| S7 | Assistente IA | S7.1 em desenvolvimento em `feature/s7-assistant-readonly`; issue #27 |
 | S8 | WhatsApp | planejada |
 | S9 | Documentos/integrações | planejada |
 | S10 | Clínicas/equipes | planejada |
