@@ -1,19 +1,20 @@
 # FisioZap — Checkpoint global para agentes
 
 **Branch obrigatória:** `feature/* → TESTES → main`
-**Estado observado em 10/10/2026:** S5.1 integrada em `TESTES`; S5.2 em desenvolvimento na `feature/s5-upcoming-appointments`. Não integrar em `main` sem fluxo autorizado.
+**Estado observado em 10/10/2026:** S5 integrada em `TESTES`; S6.1 implementada em `feature/s6-financial-ledger`, aguardando CI e integração.
 
 ## Checkpoint atual — 10/10/2026
-- `TESTES` está em `5143a7c8cd2cfc83f96fc33c2e46b523339212f9`, após os merges #19, #20 e #22.
-- PR #19 (hardening dos scripts de teste Supabase local) e PR #20 (limites de agenda seguros para horário de verão) foram integradas em `TESTES`; CI pós-merge #160 aprovou os quatro jobs (backend, web, database/pgTAP e RLS).
-- PR #22 (S5.1 — central pessoal de tarefas) foi integrada em `TESTES`; CI da PR #164 e pós-merge #165 aprovaram 4/4. A issue #21 continua aberta até homologação funcional do proprietário.
-- PR #18 continua aberta e não foi integrada.
-- Issues #11 e #13–#16 continuam abertas. A homologação funcional S3/S4 pelo proprietário permanece pendente.
-- Issue #23 registra S5.2 — alertas internos de atendimentos próximos; desenvolvimento em `feature/s5-upcoming-appointments`.
+- `TESTES` está em `98961459a3d1aa027ce90390be8d4361d425e6f1`, após a integração da PR #18 (checkpoint S4) a pedido do proprietário. A PR #18 tinha CI #155 aprovado em 4/4; CI pós-merge #168 também aprovou 4/4.
+- `main` permanece em `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`; não houve promoção para produção.
+- PR #18 foi integrada em `TESTES` no commit `98961459a3d1aa027ce90390be8d4361d425e6f1`.
+- Issues #11, #13–#16, #21 e #23 continuam abertas; homologações S3/S4/S5 pelo proprietário seguem pendentes.
+- Issue #25 registra a S6.1 — livro-caixa. A PR #26 (`feature/s6-financial-ledger` → `TESTES`) está aberta sobre o commit `9896145`, sem merge. Manter a issue aberta até a homologação funcional do proprietário.
+- CI #169 da PR #26 aprovou backend, web e database/pgTAP; RLS falhou antes dos testes de policy porque o fixture estrangeiro violou a FK de membership em `patients`. A branch local corrige o fixture com um profissional membro somente da organização sintética estrangeira; revisões independentes de QA e Segurança não apontaram bloqueios.
 - Nenhuma migration ou alteração em banco remoto foi executada. Nenhum Preview Deployment foi ativado.
 - `main` permanece intacta.
-- Validação local da S5.2: backend 41/41, guard 6/6, sintaxe/diff check e build web aprovados. Revisões de QA e segurança concluídas; CI da S5.2 ainda pendente.
-- Próximo passo: concluir revisões independentes, abrir PR da S5.2 para `TESTES` e aguardar CI; proprietário pode homologar S5.1 localmente em paralelo.
+- Último CI concluído no branch `TESTES`: run #168, 4/4 jobs verdes (backend, web, database/pgTAP e RLS). O run #169 da PR #26 segue como falha de RLS até a correção do fixture ser validada num novo run.
+- Validação local S6.1: backend 47/47, guard de mutações Supabase local, teste de faixa DST, verificações de sintaxe/diff e build de produção web aprovados. O sandbox bloqueia loopback sem permissão adicional; `npm test` passou com loopback local habilitado. Supabase CLI/Docker não estão disponíveis nesta cópia; replay de migration, pgTAP e RLS devem ser confirmados pelo CI.
+- Próximo passo: publicar a correção do fixture na PR #26, exigir 4/4 jobs verdes e integrar somente em `TESTES`; manter a issue #25 aberta para homologação funcional do proprietário.
 
 ## Progresso em 06/10/2026
 - Login Supabase: validado e não alterado.

@@ -9,6 +9,56 @@ const windowMs = 60_000;
 const maxRequestsPerWindow = 30;
 const PATIENT_STATUSES = new Set(['active', 'inactive', 'discharged']);
 const PATIENT_FIELDS = ['id','organization_id','professional_id','group_id','full_name','email','phone','birth_date','address','condition','treatment_goal','status','notes','started_at','created_at','updated_at'];
+const FINANCE_ORG_ROLES = new Set(['owner', 'coordinator', 'administrative']);
+const FINANCE_ROLES = new Set([...FINANCE_ORG_ROLES, 'professional']);
+const MAX_FINANCIAL_AMOUNT_CENTS = 999_999_999_999;
+
+function isCivilDate(value) {
+  if (typeof value !== 'string') return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]), month = Number(match[2]), day = Number(match[3]);
+  if (year < 1 || month < 1 || month > 12) return false;
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day >= 1 && day <= days[month - 1];
+}
+
+function monthRange(month) {
+  if (typeof month !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return null;
+  const year = Number(month.slice(0, 4));
+  if (year < 1) return null;
+  const monthNumber = Number(month.slice(5));
+  const nextMonth = monthNumber === 12
+    ? (year === 9999 ? null : `${String(year + 1).padStart(4, '0')}-01-01`)
+    : `${month.slice(0, 5)}${String(monthNumber + 1).padStart(2, '0')}-01`;
+  return { from: `${month}-01`, to: nextMonth };
+}
+
+function amountToCents(value) {
+  const text = typeof value === 'number' ? value.toFixed(2) : String(value ?? '');
+  const match = /^(\d{1,10})(?:\.(\d{1,2}))?$/.exec(text);
+  if (!match) return null;
+  const cents = Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0') || 0);
+  return Number.isSafeInteger(cents) && cents <= MAX_FINANCIAL_AMOUNT_CENTS ? cents : null;
+}
+
+function centsToAmount(cents) {
+  return `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`;
+}
+
+function sanitizeFinancialEntry(entry) {
+  return {
+    id: entry.id,
+    patient_id: entry.patient_id ?? null,
+    kind: entry.kind ?? entry.entry_type,
+    amount_cents: amountToCents(entry.amount),
+    description: entry.description,
+    occurred_at: entry.occurred_at,
+    due_date: entry.due_date ?? null,
+    paid_at: entry.paid_at ?? null,
+  };
+}
 
 export function createApp({ supabaseClientFactory = createClient } = {}) {
   const app = express();
@@ -187,6 +237,128 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     if (!membership) { rejectMembership(req, res); return null; }
     return membership;
   }
+  const FINANCIAL_ENTRY_FIELDS = 'id,organization_id,professional_id,patient_id,kind,entry_type,amount,description,occurred_at,due_date,paid_at';
+  async function financeScope(req, res) {
+    const membership = await appointmentScope(req, res);
+    if (!membership) return null;
+    if (!FINANCE_ROLES.has(membership.role)) {
+      res.status(403).json({ error: 'Perfil sem acesso ao financeiro.' });
+      return null;
+    }
+    return membership;
+  }
+  function scopeFinancialEntries(query, membership, userId) {
+    let scoped = query.eq('organization_id', membership.organization_id);
+    if (!FINANCE_ORG_ROLES.has(membership.role)) scoped = scoped.eq('professional_id', userId);
+    return scoped;
+  }
+  async function findVisibleFinancePatient(req, membership, patientId) {
+    let query = req.supabase.from('patients').select('id')
+      .eq('id', patientId).eq('organization_id', membership.organization_id);
+    if (!['owner', 'coordinator'].includes(membership.role)) query = query.eq('professional_id', req.user.id);
+    const { data, error } = await query.maybeSingle();
+    return !error && Boolean(data);
+  }
+  app.get('/financial-entries/patient-options', rateLimit, requireAuth, async (req, res) => {
+    const membership = await financeScope(req, res); if (!membership) return;
+    let query = req.supabase.from('patients').select('id,full_name')
+      .eq('organization_id', membership.organization_id).order('full_name', { ascending: true }).limit(500);
+    if (!['owner', 'coordinator'].includes(membership.role)) query = query.eq('professional_id', req.user.id);
+    const { data, error } = await query;
+    if (error) return res.status(400).json({ error: 'Não foi possível consultar os pacientes disponíveis.' });
+    return res.json({ patients: (data ?? []).map(({ id, full_name }) => ({ id, full_name })) });
+  });
+  app.get('/financial-entries', rateLimit, requireAuth, async (req, res) => {
+    const membership = await financeScope(req, res); if (!membership) return;
+    const range = monthRange(req.query.month);
+    if (!range) return res.status(422).json({ error: 'Informe um mês válido no formato AAAA-MM.' });
+
+    const pageSize = 500;
+    const rows = [];
+    for (let offset = 0; ; offset += pageSize) {
+      let query = scopeFinancialEntries(req.supabase.from('financial_entries').select(FINANCIAL_ENTRY_FIELDS), membership, req.user.id)
+        .gte('occurred_at', range.from).order('occurred_at', { ascending: false }).order('created_at', { ascending: false })
+        .range(offset, offset + pageSize - 1);
+      if (range.to) query = query.lt('occurred_at', range.to);
+      const { data, error } = await query;
+      if (error) return res.status(400).json({ error: 'Não foi possível consultar os lançamentos.' });
+      rows.push(...(data ?? []));
+      if ((data ?? []).length < pageSize) break;
+    }
+
+    const summary = {
+      income: { paid_cents: 0, pending_cents: 0 },
+      expense: { paid_cents: 0, pending_cents: 0 },
+    };
+    for (const row of rows) {
+      const kind = row.kind ?? row.entry_type;
+      const cents = amountToCents(row.amount);
+      if (!summary[kind] || cents === null) return res.status(500).json({ error: 'Há um lançamento inválido no período.' });
+      const key = row.paid_at ? 'paid_cents' : 'pending_cents';
+      const total = summary[kind][key] + cents;
+      if (!Number.isSafeInteger(total)) return res.status(413).json({ error: 'O período contém valores demais para totalização segura.' });
+      summary[kind][key] = total;
+    }
+    return res.json({ month: req.query.month, entries: rows.map(sanitizeFinancialEntry), summary });
+  });
+  app.post('/financial-entries', rateLimit, requireAuth, async (req, res) => {
+    const membership = await financeScope(req, res); if (!membership) return;
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return res.status(422).json({ error: 'Dados inválidos.' });
+    const allowed = new Set(['kind', 'amount_cents', 'description', 'occurred_at', 'due_date', 'patient_id', 'paid']);
+    const fields = {};
+    for (const key of Object.keys(body)) if (!allowed.has(key)) fields[key] = 'Campo gerenciado pelo sistema ou não permitido.';
+    if (!['income', 'expense'].includes(body.kind)) fields.kind = 'Tipo inválido.';
+    if (!Number.isSafeInteger(body.amount_cents) || body.amount_cents < 1 || body.amount_cents > MAX_FINANCIAL_AMOUNT_CENTS) fields.amount_cents = 'Informe um valor positivo com até duas casas decimais.';
+    if (typeof body.description !== 'string' || body.description.trim().length < 2 || body.description.trim().length > 120) fields.description = 'A descrição deve ter entre 2 e 120 caracteres.';
+    if (!isCivilDate(body.occurred_at)) fields.occurred_at = 'Data inválida.';
+    if (body.due_date !== undefined && body.due_date !== null && !isCivilDate(body.due_date)) fields.due_date = 'Vencimento inválido.';
+    if (body.patient_id !== undefined && body.patient_id !== null && body.patient_id !== '' && !isUuid(body.patient_id)) fields.patient_id = 'Paciente inválido.';
+    if (body.paid !== undefined && typeof body.paid !== 'boolean') fields.paid = 'Informe se o lançamento foi pago.';
+    if (Object.keys(fields).length) return res.status(422).json({ error: 'Dados inválidos.', fields });
+
+    const patientId = body.patient_id || null;
+    if (patientId && !(await findVisibleFinancePatient(req, membership, patientId))) {
+      return res.status(422).json({ error: 'Paciente indisponível para associação.' });
+    }
+    const kind = body.kind;
+    const { data, error } = await req.supabase.from('financial_entries').insert({
+      organization_id: membership.organization_id,
+      professional_id: req.user.id,
+      patient_id: patientId,
+      kind,
+      entry_type: kind,
+      amount: centsToAmount(body.amount_cents),
+      description: body.description.trim(),
+      occurred_at: body.occurred_at,
+      due_date: body.due_date || null,
+      paid_at: body.paid ? new Date().toISOString() : null,
+    }).select(FINANCIAL_ENTRY_FIELDS).single();
+    if (error) return res.status(400).json({ error: 'Não foi possível criar o lançamento.' });
+    return res.status(201).json({ entry: sanitizeFinancialEntry(data) });
+  });
+  app.patch('/financial-entries/:id/payment', rateLimit, requireAuth, async (req, res) => {
+    const membership = await financeScope(req, res); if (!membership) return;
+    if (!isUuid(req.params.id)) return res.status(400).json({ error: 'Lançamento inválido.' });
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length !== 1 || typeof req.body.paid !== 'boolean') {
+      return res.status(422).json({ error: 'Informe somente o estado pago/pendente.' });
+    }
+    let existingQuery = req.supabase.from('financial_entries').select(FINANCIAL_ENTRY_FIELDS)
+      .eq('id', req.params.id).eq('organization_id', membership.organization_id);
+    if (!FINANCE_ORG_ROLES.has(membership.role)) existingQuery = existingQuery.eq('professional_id', req.user.id);
+    const { data: existing, error: lookupError } = await existingQuery.maybeSingle();
+    if (lookupError || !existing) return res.status(404).json({ error: 'Lançamento não encontrado.' });
+    if (Boolean(existing.paid_at) === req.body.paid) return res.json({ entry: sanitizeFinancialEntry(existing) });
+
+    let updateQuery = req.supabase.from('financial_entries')
+      .update({ paid_at: req.body.paid ? new Date().toISOString() : null })
+      .eq('id', req.params.id).eq('organization_id', membership.organization_id);
+    if (!FINANCE_ORG_ROLES.has(membership.role)) updateQuery = updateQuery.eq('professional_id', req.user.id);
+    const { data, error } = await updateQuery.select(FINANCIAL_ENTRY_FIELDS).maybeSingle();
+    if (error) return res.status(400).json({ error: 'Não foi possível atualizar o pagamento.' });
+    if (!data) return res.status(404).json({ error: 'Lançamento não encontrado.' });
+    return res.json({ entry: sanitizeFinancialEntry(data) });
+  });
   const NOTIFICATION_FIELDS = 'id,organization_id,user_id,title,priority,status,message,action_type,action_data,read_at,completed_at,created_at';
   const NOTIFICATION_STATUSES = new Set(['unread','read','completed','dismissed']);
   const NOTIFICATION_PRIORITIES = new Set(['urgent','attention','informational']);

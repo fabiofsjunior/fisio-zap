@@ -212,3 +212,39 @@ button:disabled{cursor:wait;opacity:.7}
 .upcoming-item{display:flex;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid #edf0ee;color:#526057;font-size:13px}
 .upcoming-item time{color:#17352a;font-weight:700}
 @media(max-width:560px){.notification-fields{grid-template-columns:1fr}.notification-item{align-items:flex-start;flex-direction:column}.notification-actions{justify-content:flex-start}.notification-list-heading{align-items:flex-start;flex-direction:column}}
+
+.financial-screen{gap:16px}
+.financial-month{display:grid;gap:6px;min-width:160px;font-size:12px;font-weight:700;color:#526057}
+.financial-month input{min-height:42px;padding:8px 10px}
+.financial-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.financial-total{display:grid;gap:6px;padding:16px}
+.financial-total span{font-size:12px;font-weight:700;color:#526057}
+.financial-total strong{font-size:21px;color:#17352a;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.financial-total small{font-size:11px;color:#69756e}
+.financial-form{display:grid;gap:16px}
+.financial-form-heading h3,.financial-list-heading h3{margin:5px 0 0}
+.financial-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.financial-fields label{display:grid;align-content:start;gap:6px;font-size:13px;font-weight:700}
+.financial-fields label small{font-weight:400;color:#69756e;line-height:1.4}
+.financial-fields .financial-description{grid-column:1/-1}
+.financial-paid-toggle{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:700}
+.financial-paid-toggle input{width:20px;min-height:20px;height:20px;margin:0;accent-color:#17352a}
+.financial-submit{justify-self:start;min-width:190px}
+.financial-list-panel{min-width:0}
+.financial-list-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px}
+.financial-list{list-style:none;margin:0;padding:0}
+.financial-entry{display:flex;justify-content:space-between;align-items:center;gap:18px;padding:15px 0;border-top:1px solid #edf0ee}
+.financial-entry-main{display:grid;gap:5px;min-width:0}
+.financial-entry-main>strong{overflow-wrap:anywhere}
+.financial-kind,.financial-state{width:fit-content;border-radius:999px;padding:4px 8px;font-size:10px;font-weight:700}
+.financial-kind.income{background:#edf6f0;color:#28533d}
+.financial-kind.expense{background:#fff2ed;color:#88432b}
+.financial-patient,.financial-dates{color:#69756e;font-size:12px;line-height:1.4}
+.financial-entry-amount{display:grid;justify-items:end;gap:7px;flex:none}
+.financial-entry-amount>strong{font-size:17px;font-variant-numeric:tabular-nums;color:#17352a}
+.financial-state.paid{background:#edf6f0;color:#28533d}
+.financial-state.pending{background:#fff6e5;color:#80621d}
+.financial-entry-amount button{min-height:38px;padding:7px 10px;font-size:12px}
+.financial-empty{color:#69756e;line-height:1.5}
+@media(max-width:780px){.financial-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.financial-fields{grid-template-columns:1fr}.financial-fields .financial-description{grid-column:auto}.financial-entry{align-items:flex-start;flex-direction:column}.financial-entry-amount{width:100%;justify-items:start;grid-template-columns:1fr auto;align-items:center}.financial-entry-amount button{grid-column:1/-1}.panel-heading:has(.financial-month){flex-direction:column}.financial-month{width:100%}}
