@@ -43,8 +43,24 @@ function amountToCents(value) {
   return Number.isSafeInteger(cents) && cents <= MAX_FINANCIAL_AMOUNT_CENTS ? cents : null;
 }
 
+function financialSummaryAmountToCents(value) {
+  if (typeof value === 'number' && (!Number.isFinite(value) || value < 0)) return null;
+  const text = String(value ?? '');
+  if (!/^\d{1,10}(?:\.\d{1,2})?$/.test(text)) return null;
+  const cents = amountToCents(text);
+  return cents !== null && cents >= 1 ? cents : null;
+}
+
 function centsToAmount(cents) {
   return `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`;
+}
+
+function formatCents(cents) {
+  const negative = cents < 0;
+  const absolute = BigInt(Math.abs(cents));
+  const whole = absolute / 100n;
+  const fraction = String(absolute % 100n).padStart(2, '0');
+  return `${negative ? '-' : ''}R$ ${new Intl.NumberFormat('pt-BR').format(whole)},${fraction}`;
 }
 
 function normalizeAssistantMessage(message) {
@@ -53,6 +69,9 @@ function normalizeAssistantMessage(message) {
 
 function assistantIntent(message) {
   const normalized = normalizeAssistantMessage(message);
+  if (/^(?:resumo financeiro(?: deste mes| do mes atual)?|como esta meu financeiro(?: este mes| no mes atual)?)[?.!]*$/.test(normalized)) {
+    return 'financial_summary';
+  }
   if ((/\b(agenda|atendimento|atendimentos|compromisso|compromissos)\b/.test(normalized) && /\bhoje\b/.test(normalized)) || /\bo que (eu )?tenho hoje\b/.test(normalized)) {
     return 'agenda_today';
   }
@@ -990,8 +1009,44 @@ export function createApp({ supabaseClientFactory = createClient, now = () => ne
       return res.json({ message: count ? `Você tem ${countLabel} ${noun}.` : 'Você não tem pendências próprias em aberto.', mode: 'read_only', intent });
     }
 
+    if (intent === 'financial_summary') {
+      if (!FINANCE_ROLES.has(membership.role)) return res.status(403).json({ error: 'Perfil sem acesso ao financeiro.' });
+      const range = monthRange(req.body?.month);
+      if (!range?.to) return res.status(422).json({ error: 'Informe um mês válido no formato AAAA-MM.' });
+      let query = req.supabase.from('financial_entries').select('kind,entry_type,amount,paid_at', { count: 'exact' })
+        .eq('organization_id', membership.organization_id)
+        .gte('occurred_at', range.from).lt('occurred_at', range.to);
+      const organizationScope = FINANCE_ORG_ROLES.has(membership.role);
+      if (!organizationScope) query = query.eq('professional_id', req.user.id);
+      const { data, error, count } = await query.limit(1000);
+      if (error) return res.status(400).json({ error: 'Não foi possível consultar o resumo financeiro.' });
+      const entries = data ?? [];
+      if (!Number.isSafeInteger(count)) return res.status(400).json({ error: 'Não foi possível consultar o resumo financeiro.' });
+      if (count !== entries.length || count >= 1000) {
+        return res.status(413).json({ error: 'O período tem muitos lançamentos para um resumo exato. Consulte os lançamentos no módulo Financeiro.' });
+      }
+
+      const totals = { income: { paid: 0, pending: 0 }, expense: { paid: 0, pending: 0 } };
+      for (const entry of entries) {
+        const kind = entry.kind ?? entry.entry_type;
+        const cents = financialSummaryAmountToCents(entry.amount);
+        if (!['income', 'expense'].includes(kind) || cents === null) return res.status(500).json({ error: 'Não foi possível totalizar os lançamentos com segurança.' });
+        const status = entry.paid_at ? 'paid' : 'pending';
+        const sum = totals[kind][status] + cents;
+        if (!Number.isSafeInteger(sum)) return res.status(413).json({ error: 'Os valores do período excedem o limite para um resumo exato. Consulte o módulo financeiro.' });
+        totals[kind][status] = sum;
+      }
+      const balance = totals.income.paid - totals.expense.paid;
+      if (!Number.isSafeInteger(balance)) return res.status(413).json({ error: 'Os valores do período excedem o limite para um resumo exato. Consulte o módulo financeiro.' });
+      const monthLabel = new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+        .format(new Date(`${req.body.month}-01T00:00:00.000Z`));
+      const scope = organizationScope ? 'da organização ativa' : 'seus lançamentos';
+      const message = `Resumo financeiro de ${monthLabel} (${scope}): receitas pagas ${formatCents(totals.income.paid)}, receitas pendentes ${formatCents(totals.income.pending)}, despesas pagas ${formatCents(totals.expense.paid)}, despesas pendentes ${formatCents(totals.expense.pending)}. Saldo realizado: ${formatCents(balance)}.`;
+      return res.json({ message, mode: 'read_only', intent });
+    }
+
     return res.json({
-      message: 'Por enquanto posso consultar sua agenda de hoje ou contar suas pendências próprias. Não consulto informações clínicas nem executo ações.',
+      message: 'Por enquanto posso consultar sua agenda de hoje, contar suas pendências próprias ou resumir seu financeiro do mês informado. Não consulto informações clínicas nem executo ações.',
       mode: 'read_only', intent,
     });
   });
