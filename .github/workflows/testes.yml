@@ -16,6 +16,7 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
+      - run: node --test scripts/tests/*.test.mjs
       - run: npm run build
 
   backend:
@@ -75,6 +76,7 @@ jobs:
       - name: Bootstrap accounts and verify cross-organization RLS
         run: |
           eval "$(supabase status -o env)"
+          export FISIOZAP_ALLOW_LOCAL_TEST_MUTATIONS="true"
           export NEXT_PUBLIC_SUPABASE_URL="$API_URL"
           export NEXT_PUBLIC_SUPABASE_ANON_KEY="$ANON_KEY"
           export SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY"
