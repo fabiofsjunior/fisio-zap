@@ -252,7 +252,7 @@ class MainActivity : ComponentActivity() {
         val input = EditText(this).apply {
             hint = "https://servidor-autorizado"
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
-            singleLine = true
+            setSingleLine(true)
             setTextColor(Color.DKGRAY)
             setHintTextColor(Color.GRAY)
         }
