@@ -11,8 +11,8 @@
 - Issue #21 registra S5.1 — central pessoal de tarefas e lembretes. PR #22 está aberta de `feature/s5-notifications` para `TESTES`; CI #161 aprovou os quatro jobs. A issue deve permanecer aberta até homologação funcional do proprietário.
 - Nenhuma migration ou alteração em banco remoto foi executada. Nenhum Preview Deployment foi ativado.
 - `main` permanece intacta.
-- Validação da S5.1: backend 39/39; scripts/tests (guard de mutações) 6/6; sintaxe do teste RLS e `git diff --check` aprovados; `npm run build` aprovado; CI #161 aprovou backend, web, database/pgTAP e RLS usando Supabase local isolado.
-- Próximo passo: proprietário homologar localmente a S5.1; manter PR #22 e issue #21 abertas enquanto aguarda essa validação.
+- Validação da S5.1: backend 39/39; scripts/tests (guard de mutações) 6/6; sintaxe do teste RLS e `git diff --check` aprovados; `npm run build` aprovado; CI #161 aprovou backend, web, database/pgTAP e RLS usando Supabase local isolado. O CI #162 aprovou backend/web/database, mas o job RLS falhou ao disputar a porta local `54322` com o job database; os jobs agora estão serializados no workflow para eliminar a colisão.
+- Próximo passo: aguardar CI da serialização e, em seguida, proprietário homologar localmente a S5.1; manter PR #22 e issue #21 abertas enquanto aguarda essa validação.
 
 ## Progresso em 06/10/2026
 - Login Supabase: validado e não alterado.
