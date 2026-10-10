@@ -19,8 +19,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
       - run: node --test scripts/tests/*.test.mjs
+      - run: npm run test:chat-composer
       - run: npm run build
       - run: npm run test:agenda-day-range
 
@@ -73,7 +74,7 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: 2.119.0
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
       - name: Start isolated local Supabase
         run: |
           supabase init --force
