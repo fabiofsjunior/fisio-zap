@@ -1,22 +1,23 @@
 # FisioZap — Checkpoint global para agentes
 
 **Branch obrigatória:** `feature/* → TESTES → main`
-**Estado observado em 10/10/2026:** S6.1 integrada em `TESTES`; S7.1 em desenvolvimento em `feature/s7-assistant-readonly`.
+**Estado observado em 10/10/2026:** S6.1 e S7.1 integradas em `TESTES`; homologações funcionais locais do proprietário pendentes.
 
 ## Checkpoint atual — 10/10/2026
-- `TESTES` está em `20cfc9c45a2ccb0efbf4affcb7053c9672e6dd3e`, após a integração da PR #26 (S6.1). CI da PR #26 #170 e pós-merge #171 aprovaram 4/4 jobs.
+- `TESTES` está em `31c5dc263c180bbdd12e60944e8e1b34d1c6f639`, após a integração da PR #28 (S7.1). CI da PR #28 #172 e pós-merge #173 aprovaram 4/4 jobs.
 - `main` permanece em `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`; não houve promoção para produção.
 - PR #26 foi integrada em `TESTES` no merge commit `20cfc9c45a2ccb0efbf4affcb7053c9672e6dd3e`. O CI #169 identificou um fixture RLS inválido; a correção foi validada no CI #170 (4/4) e no CI pós-merge #171 (4/4).
 - Issue #25 continua aberta para homologação funcional local do proprietário. S6.1 não alterou banco remoto.
 - Issues #11, #13–#16, #21 e #23 continuam abertas; as homologações funcionais anteriores seguem pendentes.
-- Issue #27 define S7.1. A branch remota `feature/s7-assistant-readonly` parte de `20cfc9c`; a implementação local consulta somente a agenda do dia e as pendências próprias, sem escrita ou leitura de conteúdo clínico.
+- PR #28 (`feature/s7-assistant-readonly` → `TESTES`) foi integrada no merge commit `31c5dc263c180bbdd12e60944e8e1b34d1c6f639` após CI 4/4. S7.1 consulta somente a agenda atual e as pendências próprias, sem escrita ou leitura de conteúdo clínico.
+- Issue #27 permanece aberta para o proprietário testar localmente o fluxo do assistente e confirmar a homologação funcional.
 - Nenhuma migration ou alteração em banco remoto foi executada. Nenhum Preview Deployment foi ativado.
 - `main` permanece intacta.
-- Último CI concluído em `TESTES`: run #171, 4/4 jobs verdes (backend, web, database/pgTAP e RLS).
+- Último CI concluído em `TESTES`: run #173, 4/4 jobs verdes (backend, web, database/pgTAP e RLS); run #172 da PR #28 também passou 4/4.
 - Validação local S7.1: backend 57/57, guard local 6/6, sintaxe/diff, teste de faixa DST e build de produção web aprovados. Os testes do endpoint cobrem autenticação/membership, o dia atual, passado/futuro, dias locais de 23/24/25 horas, limites exclusivos e resultados vazios; backend executado com loopback restrito.
 - Revisões independentes de Sakura da QA e Shikamaru da Segurança não encontraram bloqueios; o relógio usado na validação é do servidor e os testes de datas são determinísticos.
-- Supabase CLI/Docker não estão disponíveis nesta cópia; CI oficial com replay, pgTAP e RLS local ainda é necessário antes da integração.
-- Próximo passo: publicar somente as mudanças S7.1 na branch `feature/s7-assistant-readonly`, abrir PR para `TESTES`, aguardar CI 4/4 e manter issues #25 e #27 abertas até homologação do proprietário.
+- A cópia local não tem Supabase CLI/Docker; os runs oficiais #172 e #173 validaram replay, pgTAP e RLS usando Supabase local no CI.
+- Próximo passo: homologação local do S7.1 pelo proprietário. Manter issues #25 e #27 abertas até a confirmação funcional; não promover para `main`.
 
 ## Progresso em 06/10/2026
 - Login Supabase: validado e não alterado.

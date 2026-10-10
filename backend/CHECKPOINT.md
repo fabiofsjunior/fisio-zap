@@ -15,9 +15,9 @@
 
 ## Validação
 - [x] 57 testes backend aprovados localmente; execução do harness requer loopback local.
-- [ ] CI da branch S7.1 (backend, web, migrations, pgTAP e RLS) pendente.
+- [x] CI da PR #28 e pós-merge #173 aprovados 4/4 (backend, web, database/pgTAP e RLS usando Supabase local).
 - [ ] Teste manual com Supabase local e token válido pendente.
 - [ ] Jornada ponta a ponta login → Chat → API → resposta → logout ainda pendente.
 
 ## Próximo passo exato
-Solicitar revisão independente, abrir a PR S7.1 para `TESTES`, aguardar CI completo e fazer smoke test local antes da homologação do proprietário.
+Homologação funcional local pelo proprietário: testar login → Chat → API, agenda do dia e pendências próprias. Manter a issue #27 aberta até a confirmação.
