@@ -1,9 +1,12 @@
 # FisioZap — Checkpoint global para agentes
 
 **Branch obrigatória:** `feature/* → TESTES → main`
-**Estado observado em 10/10/2026:** S6.1 e S7.1–S7.3 integradas em `TESTES`; S7.4 em implementação; homologações funcionais locais do proprietário pendentes.
+**Estado observado em 10/10/2026:** S6.1 e S7.1–S7.4 integradas em `TESTES`; S11.1 Android em implementação; homologações funcionais locais do proprietário pendentes.
 
 ## Checkpoint atual — 10/10/2026
+- O proprietário definiu o canal como Chat do próprio app Android instalado, semelhante ao WhatsApp. A integração externa S8 e o painel simulador foram interrompidos; todos os arquivos dessa tentativa foram revertidos antes de commit/publicação.
+- S11.1: bootstrap APK em `feature/android-chat-bootstrap`, baseada em `c545656`; issue #36 aberta. WebView Kotlin mantém frontend/regras web, URL HTTPS, mídia com escopo mínimo e CI Android dedicado. Sem publicação em loja ou Vercel Preview; homologação real pendente.
+- S7.4 integrada pela PR #35 em `c5456565f77fb43716b30f1992fad4da4291d345`; feature commit `f768820`. CI #180 e pós-merge #181 aprovados. A transcrição permanece desativada por padrão; issue #34 aberta para homologação.
 - S7.4: transcrição opcional de áudio em `feature/chat-audio-transcription`, baseada em `f18a491`; issue #34 aberta. Recurso desativado por padrão, integração server-only com OpenAI, consentimento explícito e revisão do texto antes de envio. Nenhuma chamada real ao provedor nos testes. Roteiro/configuração em `docs/S7-TRANSCRICAO-AUDIO.md`. Validação local: backend 79/79, composer 19/19, guard 6/6, DST, TypeScript/build, sintaxe e diff aprovados; revisões independentes sem bloqueios. Integração condicionada ao CI oficial desta branch. Testes simulam o provedor e as APIs de mídia; integração real de sessão/status do shell e dispositivos depende da homologação.
 - Base remota confirmada: `TESTES` = `f18a491403cdb610353e6caa1fa8b6b781b3bd64`, merge da PR #33; CI #178 e pós-merge #179 aprovados. S7.2 foi integrada pela PR #31 em `36edc5b`, CI #176/#177 aprovados. Issues #30/#32 permanecem abertas para homologação. Não existem PRs abertas no início desta etapa.
 
