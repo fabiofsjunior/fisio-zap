@@ -28,6 +28,10 @@ type ChatComposerProps = {
   onSend: (text: string, file?: File) => Promise<void>;
   sending: boolean;
   maxAttachmentBytes?: number;
+  transcriptionStatus?: 'checking' | 'enabled' | 'disabled' | 'error';
+  onTranscribe?: (file: File) => Promise<string>;
+  onCancelTranscription?: () => void;
+  transcribing?: boolean;
 };
 
 type RecordingSession = {
@@ -94,7 +98,7 @@ function formatDuration(seconds: number): string {
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-export default function ChatComposer({ onSend, sending, maxAttachmentBytes = MAX_FILE_BYTES }: ChatComposerProps) {
+export default function ChatComposer({ onSend, sending, maxAttachmentBytes = MAX_FILE_BYTES, transcriptionStatus = 'disabled', onTranscribe, onCancelTranscription = () => {}, transcribing = false }: ChatComposerProps) {
   const [draft, setDraft] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -103,17 +107,26 @@ export default function ChatComposer({ onSend, sending, maxAttachmentBytes = MAX
   const [recording, setRecording] = useState(false);
   const [finalizingRecording, setFinalizingRecording] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [transcriptionConsentRequested, setTranscriptionConsentRequested] = useState(false);
+  const [transcriptDraft, setTranscriptDraft] = useState('');
+  const [transcriptionError, setTranscriptionError] = useState('');
   const inputId = useId();
   const mountedRef = useRef(false);
   const requestIdRef = useRef(0);
   const sessionRef = useRef<RecordingSession | null>(null);
   const inFlightRef = useRef(false);
+  const transcriptionRequestIdRef = useRef(0);
+  const transcriptionLockRef = useRef(false);
+  const cancelTranscriptionRef = useRef(onCancelTranscription);
+  cancelTranscriptionRef.current = onCancelTranscription;
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       requestIdRef.current += 1;
+      transcriptionRequestIdRef.current += 1;
+      cancelTranscriptionRef.current();
       const session = sessionRef.current;
       if (session) {
         session.cancelled = true;
@@ -128,6 +141,19 @@ export default function ChatComposer({ onSend, sending, maxAttachmentBytes = MAX
       }
     };
   }, []);
+
+  useEffect(() => {
+    transcriptionRequestIdRef.current += 1;
+    transcriptionLockRef.current = false;
+    if (transcribing) cancelTranscriptionRef.current();
+    setTranscriptionConsentRequested(false);
+    setTranscriptDraft('');
+    setTranscriptionError('');
+    return () => {
+      transcriptionRequestIdRef.current += 1;
+      cancelTranscriptionRef.current();
+    };
+  }, [selectedFile]);
 
   useEffect(() => {
     if (!selectedFile || !getChatFileMimeType(selectedFile).startsWith('audio/')) {
@@ -357,6 +383,52 @@ export default function ChatComposer({ onSend, sending, maxAttachmentBytes = MAX
     setSelectedFile(file);
   }
 
+  function cancelTranscription() {
+    transcriptionRequestIdRef.current += 1;
+    transcriptionLockRef.current = false;
+    cancelTranscriptionRef.current();
+    setTranscriptionConsentRequested(false);
+    setTranscriptionError('');
+  }
+
+  async function confirmTranscription() {
+    if (!selectedFile || !getChatFileMimeType(selectedFile).startsWith('audio/') || transcriptionStatus !== 'enabled' || transcribing || transcriptionLockRef.current || !onTranscribe) return;
+    transcriptionLockRef.current = true;
+    const requestId = ++transcriptionRequestIdRef.current;
+    setTranscriptionConsentRequested(false);
+    setTranscriptionError('');
+    try {
+      const text = await onTranscribe(selectedFile);
+      if (!mountedRef.current || requestId !== transcriptionRequestIdRef.current) return;
+      if (!text.trim()) throw new Error('A transcrição não retornou texto.');
+      if (text.length > 4000) throw new Error('A transcrição excede o limite de 4.000 caracteres.');
+      setTranscriptDraft(text);
+    } catch (cause) {
+      if (!mountedRef.current || requestId !== transcriptionRequestIdRef.current) return;
+      if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
+        setTranscriptionError(cause instanceof Error ? cause.message : 'Não foi possível transcrever o áudio.');
+      }
+    } finally {
+      if (transcriptionRequestIdRef.current === requestId) transcriptionLockRef.current = false;
+    }
+  }
+
+  function appendTranscriptToDraft() {
+    const transcript = transcriptDraft.trim();
+    if (!transcript) return;
+    const nextDraft = draft.trim() ? `${draft.trimEnd()}\n${transcript}` : transcript;
+    if (nextDraft.length > 4000) {
+      setTranscriptionError('A mensagem aceita até 4.000 caracteres. Edite a transcrição antes de adicioná-la.');
+      return;
+    }
+    setDraft(nextDraft);
+    setTranscriptDraft('');
+    setTranscriptionError('');
+  }
+
+  const transcriptToAppend = transcriptDraft.trim();
+  const draftWithTranscript = draft.trim() ? `${draft.trimEnd()}\n${transcriptToAppend}` : transcriptToAppend;
+
   async function sendText() {
     const text = draft.trim();
     if (!text || sending || inFlightRef.current || permissionPending || recording || finalizingRecording) return;
@@ -386,7 +458,7 @@ export default function ChatComposer({ onSend, sending, maxAttachmentBytes = MAX
     }
   }
 
-  const controlsBusy = sending || permissionPending || recording || finalizingRecording;
+  const controlsBusy = sending || permissionPending || recording || finalizingRecording || transcribing;
   const recordingStatus = permissionPending
     ? 'Aguardando autorização para usar o microfone…'
     : recording
@@ -414,7 +486,29 @@ export default function ChatComposer({ onSend, sending, maxAttachmentBytes = MAX
             <button type="button" className="chat-composer-secondary" onClick={() => setSelectedFile(null)} disabled={controlsBusy}>Remover arquivo</button>
           </div>
           {getChatFileMimeType(selectedFile).startsWith('audio/') && previewUrl && <audio controls preload="metadata" src={previewUrl} aria-label={`Prévia de áudio: ${selectedFile.name}`} />}
-          <p>O arquivo ficará disponível apenas nesta sessão. O assistente ainda não analisa arquivos nem transcreve áudio. O texto será enviado separadamente.</p>
+          <p>O arquivo ficará disponível apenas nesta sessão e será enviado separadamente. {getChatFileMimeType(selectedFile).startsWith('audio/') ? 'A transcrição é opcional e só começa após sua confirmação.' : 'O assistente não analisa arquivos.'}</p>
+          {getChatFileMimeType(selectedFile).startsWith('audio/') && transcriptionStatus === 'enabled' && !transcriptDraft && !transcribing && (
+            <button type="button" className="chat-composer-secondary" onClick={() => { setTranscriptionError(''); setTranscriptionConsentRequested(true); }} disabled={controlsBusy}>Transcrever</button>
+          )}
+          {getChatFileMimeType(selectedFile).startsWith('audio/') && transcriptionStatus === 'checking' && <small role="status">Verificando disponibilidade da transcrição…</small>}
+          {getChatFileMimeType(selectedFile).startsWith('audio/') && transcriptionStatus === 'disabled' && <small role="status">Transcrição indisponível no momento. Você ainda pode enviar o áudio.</small>}
+          {getChatFileMimeType(selectedFile).startsWith('audio/') && transcriptionStatus === 'error' && <small role="status">Não foi possível verificar a disponibilidade. A transcrição está indisponível agora; o áudio pode ser enviado normalmente.</small>}
+          {transcriptionConsentRequested && <div className="chat-transcription-consent" role="group" aria-label="Confirmação de transcrição">
+            <p>Ao confirmar, o áudio será enviado à OpenAI para gerar uma transcrição. Este recurso gera cobrança conforme o uso. Use apenas áudio fictício em homologação. O texto ficará para sua revisão e não será enviado ao assistente até você decidir.</p>
+            <div className="chat-composer-actions">
+              <button type="button" className="chat-composer-primary" onClick={() => void confirmTranscription()} disabled={controlsBusy}>Confirmar e transcrever</button>
+              <button type="button" className="chat-composer-secondary" onClick={() => setTranscriptionConsentRequested(false)} disabled={controlsBusy}>Cancelar</button>
+            </div>
+          </div>}
+          {transcribing && <div className="chat-recording-status" role="status" aria-live="polite"><span>Transcrevendo áudio…</span><button type="button" className="chat-composer-secondary" onClick={cancelTranscription}>Cancelar transcrição</button></div>}
+          {transcriptionError && <p className="chat-composer-error" role="alert">{transcriptionError}</p>}
+          {transcriptDraft && <div className="chat-transcript-review">
+            <label htmlFor={`${inputId}-transcript`}>Transcrição para revisar</label>
+            <textarea id={`${inputId}-transcript`} aria-label="Transcrição para revisar" value={transcriptDraft} onChange={(event) => setTranscriptDraft(event.target.value.slice(0, 4000))} rows={4} maxLength={4000} disabled={controlsBusy} />
+            <small>{transcriptDraft.length.toLocaleString('pt-BR')} / 4.000 caracteres. Revise antes de adicionar ao rascunho.</small>
+            <button type="button" className="chat-composer-secondary" onClick={appendTranscriptToDraft} disabled={controlsBusy || !transcriptToAppend || draftWithTranscript.length > 4000}>Adicionar ao rascunho</button>
+            {draftWithTranscript.length > 4000 && <small role="status">O rascunho comporta mais {Math.max(0, 4000 - draft.trim().length)} caracteres. Reduza a transcrição para adicioná-la.</small>}
+          </div>}
         </div>
       )}
 

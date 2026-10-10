@@ -96,8 +96,16 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function renderComposer(onSend: (text: string, file?: File) => Promise<void> = async () => {}) {
-  return render(React.createElement(ChatComposer, { onSend, sending: false }));
+type ComposerProps = {
+  onSend?: (text: string, file?: File) => Promise<void>;
+  transcriptionStatus?: 'checking' | 'enabled' | 'disabled' | 'error';
+  onTranscribe?: (file: File) => Promise<string>;
+  onCancelTranscription?: () => void;
+  transcribing?: boolean;
+};
+
+function renderComposer(props: ComposerProps = {}) {
+  return render(React.createElement(ChatComposer, { onSend: async () => {}, sending: false, ...props }));
 }
 
 function selectFile(file: File) {
@@ -111,7 +119,7 @@ async function flushPendingMediaRequest() {
 test('sends the selected file alone, retains draft on success, and removes the attachment cleanly', async () => {
   const calls: Array<[string, File | undefined]> = [];
   const onSend = async (text: string, file?: File) => { calls.push([text, file]); };
-  renderComposer(onSend);
+  renderComposer({ onSend });
   const draft = screen.getByLabelText('Mensagem para o assistente') as HTMLTextAreaElement;
   fireEvent.change(draft, { target: { value: 'Texto que deve permanecer no rascunho' } });
   const file = new File(['pdf-content'], 'plano.pdf', { type: 'application/pdf' });
@@ -136,7 +144,7 @@ test('sends the selected file alone, retains draft on success, and removes the a
 
 test('rejects attachments larger than 10 MiB before calling onSend', async () => {
   const calls: Array<[string, File | undefined]> = [];
-  renderComposer(async (text, file) => { calls.push([text, file]); });
+  renderComposer({ onSend: async (text, file) => { calls.push([text, file]); } });
   selectFile(new File([new Uint8Array(10 * 1024 * 1024 + 1)], 'too-large.pdf', { type: 'application/pdf' }));
   const alert = await screen.findByRole('alert');
   assert.match(alert.textContent ?? '', /limite por arquivo é 10 MB/i);
@@ -162,7 +170,7 @@ test('keeps both attachment and draft when onSend rejects, allowing retry', asyn
     attempts += 1;
     if (attempts === 1) throw new Error('temporary network failure');
   };
-  renderComposer(onSend);
+  renderComposer({ onSend });
   const draft = screen.getByLabelText('Mensagem para o assistente') as HTMLTextAreaElement;
   fireEvent.change(draft, { target: { value: 'Não apagar este texto' } });
   const file = new File(['audio'], 'consulta.webm', { type: 'audio/webm' });
@@ -181,6 +189,123 @@ test('keeps both attachment and draft when onSend rejects, allowing retry', asyn
   assert.equal(calls[1][0], '');
   assert.equal(calls[1][1], file);
   assert.equal(draft.value, 'Não apagar este texto');
+});
+
+test('disabled transcription status never offers transcription but still allows audio attachment sending', async () => {
+  const calls: Array<[string, File | undefined]> = [];
+  const onTranscribe = async () => { throw new Error('must not be called'); };
+  renderComposer({
+    onSend: async (text, file) => { calls.push([text, file]); },
+    onTranscribe,
+    transcriptionStatus: 'disabled',
+  });
+  const audio = new File(['audio bytes'], 'nota.webm', { type: 'audio/webm' });
+  selectFile(audio);
+  await screen.findByText('nota.webm');
+  assert.match(screen.getByRole('status').textContent ?? '', /Transcrição indisponível/i);
+  assert.equal(screen.queryByRole('button', { name: 'Transcrever' }), null);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Enviar anexo' }));
+  await waitFor(() => assert.equal(calls.length, 1));
+  assert.equal(calls[0][0], '');
+  assert.equal(calls[0][1], audio);
+});
+
+test('checking transcription can become enabled after selecting audio without losing the file', async () => {
+  const view = render(React.createElement(ChatComposer, {
+    onSend: async () => {}, sending: false, transcriptionStatus: 'checking',
+  }));
+  const audio = new File(['audio bytes'], 'gravacao.webm', { type: 'audio/webm' });
+  selectFile(audio);
+  await screen.findByText('gravacao.webm');
+  assert.match(screen.getByRole('status').textContent ?? '', /Verificando disponibilidade/i);
+  assert.equal(screen.queryByRole('button', { name: 'Transcrever' }), null);
+
+  view.rerender(React.createElement(ChatComposer, {
+    onSend: async () => {}, sending: false, transcriptionStatus: 'enabled', onTranscribe: async () => 'texto',
+  }));
+  assert.ok(await screen.findByRole('button', { name: 'Transcrever' }));
+  assert.equal(screen.getByText('gravacao.webm').textContent, 'gravacao.webm');
+});
+
+test('requires explicit consent, keeps transcript separate until review, and appends without replacing draft', async () => {
+  const transcript = deferred<string>();
+  const transcribeCalls: File[] = [];
+  const sendCalls: Array<[string, File | undefined]> = [];
+  const audio = new File(['audio bytes'], 'voz.webm', { type: 'audio/webm' });
+  const view = render(React.createElement(ChatComposer, {
+    onSend: async (text: string, file?: File) => { sendCalls.push([text, file]); },
+    sending: false,
+    transcriptionStatus: 'enabled',
+    onTranscribe: async (file: File) => { transcribeCalls.push(file); return transcript.promise; },
+  }));
+  const draft = screen.getByRole('textbox', { name: 'Mensagem para o assistente' }) as HTMLTextAreaElement;
+  fireEvent.change(draft, { target: { value: 'Minha observação' } });
+  selectFile(audio);
+  await screen.findByText('voz.webm');
+  fireEvent.click(screen.getByRole('button', { name: 'Transcrever' }));
+  await screen.findByRole('group', { name: 'Confirmação de transcrição' });
+  assert.equal(transcribeCalls.length, 0, 'opening consent must not send audio');
+  assert.equal(draft.value, 'Minha observação');
+  fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+  assert.equal(transcribeCalls.length, 0, 'declining consent must not send audio');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Transcrever' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirmar e transcrever' }));
+  await waitFor(() => assert.equal(transcribeCalls.length, 1));
+  assert.equal(transcribeCalls[0], audio);
+  transcript.resolve('  texto reconhecido  ');
+  const review = await screen.findByRole('textbox', { name: 'Transcrição para revisar' }) as HTMLTextAreaElement;
+  assert.equal(review.value, '  texto reconhecido  ');
+  assert.equal(draft.value, 'Minha observação', 'transcription must not alter the draft before review');
+  assert.equal(sendCalls.length, 0, 'transcription must not send a chat message');
+
+  fireEvent.change(review, { target: { value: 'texto revisado pelo profissional' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Adicionar ao rascunho' }));
+  assert.equal(draft.value, 'Minha observação\ntexto revisado pelo profissional');
+  assert.equal(screen.queryByRole('textbox', { name: 'Transcrição para revisar' }), null);
+  assert.equal(sendCalls.length, 0, 'adding to draft must not send automatically');
+  fireEvent.click(screen.getByRole('button', { name: 'Remover arquivo' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Enviar mensagem' }));
+  await waitFor(() => assert.deepEqual(sendCalls, [['Minha observação\ntexto revisado pelo profissional', undefined]]));
+  view.unmount();
+});
+
+test('cancels transcription and ignores a late result', async () => {
+  const transcript = deferred<string>();
+  let cancelCalls = 0;
+  const onTranscribe = async () => transcript.promise;
+  const audio = new File(['audio bytes'], 'cancelar.webm', { type: 'audio/webm' });
+  const view = render(React.createElement(ChatComposer, {
+    onSend: async () => {}, sending: false, transcriptionStatus: 'enabled',
+    onTranscribe, onCancelTranscription: () => { cancelCalls += 1; }, transcribing: false,
+  }));
+  const draft = screen.getByRole('textbox', { name: 'Mensagem para o assistente' }) as HTMLTextAreaElement;
+  fireEvent.change(draft, { target: { value: 'rascunho preservado' } });
+  selectFile(audio);
+  await screen.findByText('cancelar.webm');
+  const cancelBaseline = cancelCalls;
+  fireEvent.click(screen.getByRole('button', { name: 'Transcrever' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirmar e transcrever' }));
+  assert.equal(cancelCalls, cancelBaseline, 'starting the request must not cancel it');
+
+  view.rerender(React.createElement(ChatComposer, {
+    onSend: async () => {}, sending: false, transcriptionStatus: 'enabled',
+    onTranscribe, onCancelTranscription: () => { cancelCalls += 1; }, transcribing: true,
+  }));
+  await screen.findByRole('button', { name: 'Cancelar transcrição' });
+  fireEvent.click(screen.getByRole('button', { name: 'Cancelar transcrição' }));
+  assert.equal(cancelCalls, cancelBaseline + 1);
+  view.rerender(React.createElement(ChatComposer, {
+    onSend: async () => {}, sending: false, transcriptionStatus: 'enabled',
+    onTranscribe, onCancelTranscription: () => { cancelCalls += 1; }, transcribing: false,
+  }));
+  transcript.resolve('resposta tardia não deve aparecer');
+  await act(async () => flushPendingMediaRequest());
+  assert.equal(screen.queryByRole('textbox', { name: 'Transcrição para revisar' }), null);
+  assert.equal(draft.value, 'rascunho preservado');
+  assert.ok(screen.getByText('cancelar.webm'));
+  view.unmount();
 });
 
 test('reports microphone permission denied and allows a successful retry', async () => {

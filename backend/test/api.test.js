@@ -5,6 +5,7 @@ process.env.NODE_ENV='test';
 process.env.NEXT_PUBLIC_SUPABASE_URL='http://test.local';
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY='test-anon-key';
 const {createApp}=await import('../src/index.js');
+const {getTranscriptionConfig,transcribeWithOpenAI}=await import('../src/chat-transcription.js');
 
 function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],operationErrors={},selectCountOverrides={}}={}){
   const memberRows=(memberships??[membership]).map(row=>({...row,user_id:row.user_id??user.id}));
@@ -75,10 +76,10 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
     }
   };
 }
-function startServer(options={},supabaseClientFactory=null,now=()=>new Date()){const database=mock(options);const app=createApp({supabaseClientFactory:supabaseClientFactory??(()=>database),now});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,database,close:()=>{server.close();server.closeAllConnections?.()}})))}
+function startServer(options={},supabaseClientFactory=null,now=()=>new Date(),appOptions={}){const database=mock(options);const app=createApp({supabaseClientFactory:supabaseClientFactory??(()=>database),now,...appOptions});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,database,close:()=>{server.close();server.closeAllConnections?.()}})))}
 async function request(baseUrl,path,options={}){return fetch(baseUrl+path,{...options,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...(options.headers||{})},body:options.body?JSON.stringify(options.body):undefined})}
-async function binaryRequest(baseUrl,body,{mime='application/pdf',filename='document.pdf',path='/chat/attachments',headers={}}={}){
-  return fetch(baseUrl+path,{method:'POST',body,headers:{
+async function binaryRequest(baseUrl,body,{mime='application/pdf',filename='document.pdf',path='/chat/attachments',headers={},signal}={}){
+return fetch(baseUrl+path,{method:'POST',body,signal,headers:{
     Authorization:'Bearer valid',
     'Content-Type':mime,
     'X-FisioZap-File-Name':encodeURIComponent(filename),
@@ -124,6 +125,7 @@ test('CORS permits the organization selector header',async()=>{
     assert.equal(response.status,204);
     assert.match(response.headers.get('access-control-allow-headers'),/X-FisioZap-Organization-Id/i);
     assert.match(response.headers.get('access-control-allow-headers'),/X-FisioZap-File-Name/i);
+    assert.match(response.headers.get('access-control-allow-headers'),/X-Transcription-Consent/i);
   }finally{await s.close()}
 });
 
@@ -457,7 +459,7 @@ test('chat attachment endpoint accepts supported signatures and returns only rec
       assert.equal(response.status,200,item.mime);
       const body=await response.json();
       assert.equal(body.mode,'attachment_receipt');
-      assert.equal(body.message,'Arquivo/Áudio recebido nesta sessão. Transcrição e análise de anexos ainda não estão disponíveis.');
+      assert.equal(body.message,'Arquivo/Áudio recebido nesta sessão. Nenhuma transcrição ou análise foi realizada.');
       assert.deepEqual({...body.attachment,id:'replaced'},{
         id:'replaced',name:item.filename,size:item.body.length,mime:item.normalizedMime??item.mime.split(';')[0],kind:item.kind,
       });
@@ -511,6 +513,184 @@ test('chat attachment endpoint rejects unsafe encoded filenames and compressed c
     const compressed=await binaryRequest(s.baseUrl,Buffer.from('%PDF-1.7'),{headers:{'Content-Encoding':'gzip'}});
     assert.equal(compressed.status,415);
     assert.deepEqual(await compressed.json(),{error:'Codificação do arquivo não aceita.'});
+  }finally{await s.close()}
+});
+
+const transcriptionConfig={enabled:true,apiKey:'server-test-secret',model:'gpt-4o-mini-transcribe'};
+const validAudio=Buffer.from([0x1a,0x45,0xdf,0xa3,0x00,0x01]);
+const consentHeaders={'X-Transcription-Consent':'true'};
+
+test('transcription configuration defaults off and accepts only a server key and allowlisted model',()=>{
+  assert.deepEqual(getTranscriptionConfig({}),{enabled:false,apiKey:'',model:'gpt-4o-mini-transcribe'});
+  assert.equal(getTranscriptionConfig({FISIOZAP_TRANSCRIPTION_ENABLED:'true',OPENAI_API_KEY:'  '}).enabled,false);
+  assert.equal(getTranscriptionConfig({FISIOZAP_TRANSCRIPTION_ENABLED:'1',OPENAI_API_KEY:'server-key'}).enabled,false);
+  assert.equal(getTranscriptionConfig({FISIOZAP_TRANSCRIPTION_ENABLED:'true',OPENAI_API_KEY:'server-key',FISIOZAP_TRANSCRIPTION_MODEL:'unknown'}).enabled,false);
+  assert.equal(getTranscriptionConfig({FISIOZAP_TRANSCRIPTION_ENABLED:'true',OPENAI_API_KEY:'server-key'}).enabled,true);
+});
+
+test('OpenAI adapter builds a multipart request through an injected mock only',async()=>{
+  let captured;
+  const fakeFetch=async(url,options)=>{
+    captured={url,options};
+    return new Response(JSON.stringify({text:'fala reconhecida'}),{status:200,headers:{'Content-Type':'application/json'}});
+  };
+  const text=await transcribeWithOpenAI({
+    bytes:validAudio,mime:'audio/webm',filename:'audio.webm',apiKey:'server-key',model:'gpt-4o-mini-transcribe',fetchImpl:fakeFetch,
+  });
+  assert.equal(text,'fala reconhecida');
+  assert.equal(captured.url,'https://api.openai.com/v1/audio/transcriptions');
+  assert.equal(captured.options.method,'POST');
+  assert.equal(captured.options.headers.Authorization,'Bearer server-key');
+  assert.equal(captured.options.body.get('model'),'gpt-4o-mini-transcribe');
+  assert.equal(captured.options.body.get('response_format'),'json');
+  assert.equal(captured.options.body.get('file').name,'audio.webm');
+  assert.ok(captured.options.signal instanceof AbortSignal);
+});
+
+test('transcription status is authenticated, membership-scoped, and never reveals secrets',async()=>{
+  const denied=await startServer({memberships:[]},null,undefined,{transcriptionConfig:()=>transcriptionConfig});
+  const enabled=await startServer({},null,undefined,{transcriptionConfig:()=>transcriptionConfig});
+  const disabled=await startServer({},null,undefined,{transcriptionConfig:()=>({enabled:false,apiKey:'secret',model:null})});
+  try{
+    assert.equal((await request(enabled.baseUrl,'/chat/transcription-status')).status,401);
+    assert.equal((await request(denied.baseUrl,'/chat/transcription-status',{headers:{Authorization:'Bearer valid'}})).status,403);
+    const response=await request(enabled.baseUrl,'/chat/transcription-status',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    assert.deepEqual(await response.json(),{enabled:true});
+    const disabledResponse=await request(disabled.baseUrl,'/chat/transcription-status',{headers:{Authorization:'Bearer valid'}});
+    assert.deepEqual(await disabledResponse.json(),{enabled:false});
+    assert.ok([...enabled.database.calls,...denied.database.calls].every(table=>table==='organization_members'));
+  }finally{await denied.close();await enabled.close();await disabled.close()}
+});
+
+test('transcription requires authenticated organization membership and explicit consent before provider use',async()=>{
+  let providerCalls=0;
+  const provider=async()=>{providerCalls+=1;return 'transcrição de teste'};
+  const signedOut=await startServer({},null,undefined,{transcriptionProvider:provider,transcriptionConfig:()=>transcriptionConfig});
+  const noMembership=await startServer({memberships:[]},null,undefined,{transcriptionProvider:provider,transcriptionConfig:()=>transcriptionConfig});
+  const s=await startServer({},null,undefined,{transcriptionProvider:provider,transcriptionConfig:()=>transcriptionConfig});
+  try{
+    const unauth=await binaryRequest(signedOut.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:{Authorization:''}});
+    assert.equal(unauth.status,401);
+    assert.deepEqual(signedOut.database.calls,[]);
+    const denied=await binaryRequest(noMembership.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders});
+    assert.equal(denied.status,403);
+    assert.deepEqual(noMembership.database.calls,['organization_members']);
+    const noConsent=await binaryRequest(s.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm'});
+    assert.equal(noConsent.status,422);
+    assert.equal(providerCalls,0);
+  }finally{await signedOut.close();await noMembership.close();await s.close()}
+});
+
+test('valid audio is transcribed only after signature validation and returns text without filename metadata',async()=>{
+  const calls=[];
+  const provider=async input=>{calls.push(input);return 'texto reconhecido'};
+  const s=await startServer({},null,undefined,{transcriptionProvider:provider,transcriptionConfig:()=>transcriptionConfig});
+  try{
+    const response=await binaryRequest(s.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm;codecs=opus',filename:'paciente particular.webm',headers:consentHeaders});
+    assert.equal(response.status,200);
+    assert.deepEqual(await response.json(),{text:'texto reconhecido',mode:'transcription'});
+    assert.equal(calls.length,1);
+    assert.equal(calls[0].mime,'audio/webm');
+    assert.equal(calls[0].filename,'audio.webm');
+    assert.equal(calls[0].apiKey,transcriptionConfig.apiKey);
+    assert.equal(calls[0].model,transcriptionConfig.model);
+    assert.ok(s.database.calls.every(table=>table==='organization_members'));
+  }finally{await s.close()}
+});
+
+test('disconnect after upload aborts the pending provider request without releasing its slot early',async()=>{
+  let providerSignal;
+  let signalReady;
+  const started=new Promise(resolve=>{signalReady=resolve});
+  const provider=({signal})=>new Promise((resolve,reject)=>{
+    providerSignal=signal;
+    signalReady();
+    signal.addEventListener('abort',()=>reject(new Error('aborted')), {once:true});
+  });
+  const s=await startServer({},null,undefined,{transcriptionProvider:provider,transcriptionConfig:()=>transcriptionConfig});
+  const controller=new AbortController();
+  try{
+    const pending=binaryRequest(s.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders,signal:controller.signal});
+    await started;
+    controller.abort();
+    await assert.rejects(pending);
+    for(let attempt=0;attempt<20&&!providerSignal?.aborted;attempt++) await new Promise(resolve=>setTimeout(resolve,5));
+    assert.equal(providerSignal.aborted,true);
+  }finally{await s.close()}
+});
+
+test('transcription quota is three valid attempts per user and organization per rolling minute',async()=>{
+  let clock=10_000;
+  let providerCalls=0;
+  const orgA='22222222-2222-4222-8222-222222222222';
+  const orgB='44444444-4444-4444-8444-444444444444';
+  const s=await startServer({memberships:[{organization_id:orgA,role:'professional'},{organization_id:orgB,role:'professional'}]},null,undefined,{
+    transcriptionProvider:async()=>{providerCalls+=1;return 'ok'},
+    transcriptionConfig:()=>transcriptionConfig,
+    transcriptionNow:()=>clock,
+  });
+  const send=org=>binaryRequest(s.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:{...consentHeaders,'X-FisioZap-Organization-Id':org}});
+  try{
+    for(let i=0;i<3;i++) assert.equal((await send(orgA)).status,200);
+    assert.equal((await send(orgA)).status,429);
+    assert.equal((await send(orgB)).status,200);
+    clock+=60_000;
+    assert.equal((await send(orgA)).status,200);
+    assert.equal(providerCalls,5);
+  }finally{await s.close()}
+});
+
+test('transcription rejects images, bad extensions/signatures, empty, oversized and compressed bodies without provider calls',async()=>{
+  let providerCalls=0;
+  const provider=async()=>{providerCalls+=1;return 'should not run'};
+  const s=await startServer({},null,undefined,{transcriptionProvider:provider,transcriptionConfig:()=>transcriptionConfig});
+  try{
+    const cases=[
+      {body:Buffer.from('%PDF-1.7'),mime:'application/pdf',filename:'document.pdf',status:415},
+      {body:Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),mime:'image/png',filename:'photo.png',status:415},
+      {body:validAudio,mime:'audio/webm',filename:'voz.html',status:422},
+      {body:Buffer.from('not audio'),mime:'audio/webm',filename:'voz.webm',status:422},
+      {body:Buffer.alloc(0),mime:'audio/webm',filename:'voz.webm',status:400},
+    ];
+    for(const item of cases){
+      const response=await binaryRequest(s.baseUrl,item.body,{path:'/chat/transcriptions',mime:item.mime,filename:item.filename,headers:consentHeaders});
+      assert.equal(response.status,item.status);
+    }
+    const oversized=await binaryRequest(s.baseUrl,Buffer.alloc(10*1024*1024+1,0),{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders});
+    assert.equal(oversized.status,413);
+    const compressed=await binaryRequest(s.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:{...consentHeaders,'Content-Encoding':'gzip'}});
+    assert.equal(compressed.status,415);
+    for(let i=0;i<3;i++) assert.equal((await binaryRequest(s.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders})).status,200);
+    assert.equal(providerCalls,3);
+  }finally{await s.close()}
+});
+
+test('disabled transcription returns 503 and provider errors or unsafe output return a safe error',async()=>{
+  let providerCalls=0;
+  const disabled=await startServer({},null,undefined,{transcriptionProvider:async()=>{providerCalls+=1;return 'x'},transcriptionConfig:()=>({enabled:false})});
+  const failure=await startServer({},null,undefined,{transcriptionProvider:async()=>{providerCalls+=1;throw new Error('secret provider details')},transcriptionConfig:()=>transcriptionConfig});
+  const unsafe=await startServer({},null,undefined,{transcriptionProvider:async()=>{providerCalls+=1;return 'x'.repeat(20_001)},transcriptionConfig:()=>transcriptionConfig});
+  try{
+    const disabledResponse=await binaryRequest(disabled.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders});
+    assert.equal(disabledResponse.status,503);
+    const failed=await binaryRequest(failure.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders});
+    assert.equal(failed.status,502);
+    assert.doesNotMatch(await failed.text(),/secret provider details/);
+    const tooLong=await binaryRequest(unsafe.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders});
+    assert.equal(tooLong.status,502);
+    assert.equal(providerCalls,2);
+  }finally{await disabled.close();await failure.close();await unsafe.close()}
+});
+
+test('transcription raw routes bypass JSON parsing before auth, including aliases',async()=>{
+  const s=await startServer();
+  try{
+    for(const path of ['/chat/transcriptions/','/CHAT/TRANSCRIPTIONS']){
+      const response=await binaryRequest(s.baseUrl,Buffer.alloc(70*1024),{path,mime:'application/json',headers:{Authorization:''}});
+      assert.equal(response.status,401,path);
+    }
+    assert.deepEqual(s.database.calls,[]);
   }finally{await s.close()}
 });
 test('chat attachment endpoint caps binary bodies at 10 MiB',async()=>{
