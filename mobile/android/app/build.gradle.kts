@@ -66,7 +66,7 @@ val validateReleaseWebAppUrl = tasks.register("validateReleaseWebAppUrl") {
         val port = uri?.port ?: -1
         val authority = host?.lowercase()?.let { value -> value + if (port >= 0) ":$port" else "" }
         val valid = uri != null && uri.isAbsolute && !uri.isOpaque
-            && uri.scheme.equals("https", ignoreCase = true)
+            && uri.scheme == "https"
             && !host.isNullOrBlank() && host.all { it.code in 0x21..0x7e }
             && uri.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null
             && port in -1..65535 && port != 0
