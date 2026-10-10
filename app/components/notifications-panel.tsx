@@ -14,6 +14,7 @@ type Notification = {
 };
 
 type Filter = 'open' | 'completed' | 'all';
+type UpcomingAppointment = { id: string; starts_at: string; status: 'scheduled' | 'confirmed' | 'rescheduled' };
 
 async function notificationRequest<T>(organizationId: string, path: string, options: RequestInit = {}): Promise<T> {
   const client = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
@@ -31,26 +32,32 @@ async function notificationRequest<T>(organizationId: string, path: string, opti
 
 export default function NotificationsPanel({ organizationId }: { organizationId: string }) {
   const [items, setItems] = useState<Notification[]>([]);
+  const [upcomingAppointments, setUpcomingAppointments] = useState<UpcomingAppointment[]>([]);
   const [filter, setFilter] = useState<Filter>('open');
   const [title, setTitle] = useState('');
   const [message, setMessage] = useState('');
   const [priority, setPriority] = useState<Notification['priority']>('informational');
   const [dueAt, setDueAt] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadingUpcoming, setLoadingUpcoming] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    setError('');
-    try {
-      const result = await notificationRequest<{ notifications: Notification[] }>(organizationId, '/notifications');
-      setItems(result.notifications || []);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Falha ao carregar as tarefas.');
-    } finally {
-      setLoading(false);
-    }
+    setLoadingUpcoming(true);
+    const [tasksResult, appointmentsResult] = await Promise.allSettled([
+      notificationRequest<{ notifications: Notification[] }>(organizationId, '/notifications'),
+      notificationRequest<{ appointments: UpcomingAppointment[] }>(organizationId, '/notifications/upcoming-appointments'),
+    ]);
+    const errors: string[] = [];
+    if (tasksResult.status === 'fulfilled') setItems(tasksResult.value.notifications || []);
+    else errors.push(tasksResult.reason instanceof Error ? tasksResult.reason.message : 'Falha ao carregar tarefas.');
+    if (appointmentsResult.status === 'fulfilled') setUpcomingAppointments(appointmentsResult.value.appointments || []);
+    else errors.push(appointmentsResult.reason instanceof Error ? appointmentsResult.reason.message : 'Falha ao consultar a agenda.');
+    setError(errors.join(' '));
+    setLoading(false);
+    setLoadingUpcoming(false);
   }, [organizationId]);
 
   useEffect(() => { void refresh(); }, [refresh]);
@@ -103,6 +110,12 @@ export default function NotificationsPanel({ organizationId }: { organizationId:
   const openCount = items.filter(item => item.status === 'unread' || item.status === 'read').length;
   return <section className="module-screen" aria-label="Central de tarefas e lembretes">
     <div className="panel-heading"><div><span className="eyebrow">Notificações · S5</span><h2>Tarefas e lembretes</h2><p>Organize suas pendências pessoais em um só lugar.</p></div><span className="count" aria-label={`${openCount} tarefas abertas`}>{openCount} abertas</span></div>
+    <div className="panel upcoming-appointments">
+      <div className="notification-list-heading"><h3>Nas próximas 24 horas</h3><span className="muted">Da sua agenda</span></div>
+      {loadingUpcoming ? <p role="status">Consultando a agenda…</p> : upcomingAppointments.length === 0 ? <p className="empty-notifications">Nenhum atendimento agendado para as próximas 24 horas.</p> : <ul className="upcoming-list">
+        {upcomingAppointments.map(appointment => <li className="upcoming-item" key={appointment.id}><span>Atendimento · {appointment.status === 'confirmed' ? 'Confirmado' : appointment.status === 'rescheduled' ? 'Reagendado' : 'Agendado'}</span><time dateTime={appointment.starts_at}>{new Date(appointment.starts_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</time></li>)}
+      </ul>}
+    </div>
     <div className="panel notification-privacy"><strong>Uso operacional</strong><p>Registre tarefas e lembretes sem incluir dados clínicos, informações de pacientes ou valores financeiros.</p></div>
     {error && <div className="panel notice" role="alert"><p>{error}</p></div>}
     <form className="panel notification-form" onSubmit={event => void createTask(event)}>

@@ -234,6 +234,20 @@ export function createApp({ supabaseClientFactory = createClient } = {}) {
     if (error) return res.status(400).json({ error: 'Não foi possível consultar as tarefas.' });
     return res.json({ notifications: data ?? [] });
   });
+  app.get('/notifications/upcoming-appointments', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    const now = new Date();
+    const within24Hours = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const { data, error } = await req.supabase.from('appointments')
+      .select('id,starts_at,status')
+      .eq('organization_id', membership.organization_id).eq('professional_id', req.user.id)
+      .in('status', ['scheduled','confirmed','rescheduled'])
+      .gte('starts_at', now.toISOString()).lt('starts_at', within24Hours.toISOString())
+      .order('starts_at', { ascending: true }).limit(20);
+    if (error) return res.status(400).json({ error: 'Não foi possível consultar os próximos atendimentos.' });
+    const appointments = (data ?? []).map(({ id, starts_at, status }) => ({ id, starts_at, status }));
+    return res.json({ appointments });
+  });
   app.post('/notifications', rateLimit, requireAuth, async (req, res) => {
     const membership = await appointmentScope(req, res); if (!membership) return;
     const errors = validateNotification(req.body);
