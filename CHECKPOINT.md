@@ -4,6 +4,7 @@
 **Estado observado em 10/10/2026:** S6.1 e S7.1 integradas em `TESTES`; homologações funcionais locais do proprietário pendentes.
 
 ## Checkpoint atual — 10/10/2026
+- S7.3: áudio e anexos de sessão em `feature/chat-audio-attachments`, baseada em `36edc5b`; issue #32 aberta para homologação. Backend 69/69, interface 15/15 (DOM/MediaRecorder simulados), guard 6/6, DST, TypeScript/build, sintaxe e diff aprovados localmente. Revisões de Sakura QA e Shikamaru Segurança sem bloqueadores; integração condicionada ao CI oficial. Sem persistência, transcrição, interpretação de anexos ou alterações em banco remoto. Roteiro em `docs/S7-CHAT-AUDIO-ANEXOS.md`.
 - S7.2: resumo financeiro somente leitura em `feature/s7-financial-assistant`, baseada em `ee7cbbf`. Issue #30 permanece aberta para homologação funcional. Contrato e roteiro em `docs/S7-ASSISTENTE-FINANCEIRO.md`; integração condicionada ao CI e revisões. Nenhuma migration nova ou alteração em banco remoto.
 - Validação local S7.2: backend 64/64, guard local 6/6, teste DST, build web, sintaxe e diff aprovados. CI oficial da PR ainda deve ser consultado antes de integrar; não considerar essa evidência homologação funcional.
 - `TESTES` está em `31c5dc263c180bbdd12e60944e8e1b34d1c6f639`, após a integração da PR #28 (S7.1). CI da PR #28 #172 e pós-merge #173 aprovaram 4/4 jobs.

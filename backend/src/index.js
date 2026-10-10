@@ -1,6 +1,15 @@
 import 'dotenv/config';
 import express from 'express';
+import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
+import {
+  attachmentKind,
+  attachmentNameMatchesMime,
+  decodeSafeAttachmentName,
+  matchesAttachmentSignature,
+  MAX_CHAT_ATTACHMENT_BYTES,
+  normalizeAttachmentMime,
+} from './chat-attachment.js';
 
 const port = Number(process.env.PORT || 3001);
 const frontendOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
@@ -67,6 +76,23 @@ function normalizeAssistantMessage(message) {
   return message.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
+function rawHeaderValues(req, name) {
+  const values = [];
+  for (let index = 0; index < req.rawHeaders.length; index += 2) {
+    if (req.rawHeaders[index].toLowerCase() === name) values.push(req.rawHeaders[index + 1]);
+  }
+  return values;
+}
+
+function isChatAttachmentPath(path) {
+  return /^\/chat\/attachments\/?$/i.test(path);
+}
+
+function discardChatAttachmentBody(req) {
+  if (Buffer.isBuffer(req.body)) req.body.fill(0);
+  req.body = undefined;
+}
+
 function assistantIntent(message) {
   const normalized = normalizeAssistantMessage(message);
   if (/^(?:resumo financeiro(?: deste mes| do mes atual)?|como esta meu financeiro(?: este mes| no mes atual)?)[?.!]*$/.test(normalized)) {
@@ -128,13 +154,17 @@ function sanitizeFinancialEntry(entry) {
 export function createApp({ supabaseClientFactory = createClient, now = () => new Date() } = {}) {
   const app = express();
   const rateBuckets = new Map();
+  const jsonBodyParser = express.json({ limit: '64kb' });
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '64kb' }));
+  app.use((req, res, next) => {
+    if (req.method === 'POST' && isChatAttachmentPath(req.path)) return next();
+    return jsonBodyParser(req, res, next);
+  });
 
   app.use((req, res, next) => {
     const origin = req.headers.origin;
     if (origin === frontendOrigin) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin'); }
-    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-FisioZap-Organization-Id');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-FisioZap-Organization-Id, X-FisioZap-File-Name');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
@@ -969,6 +999,56 @@ export function createApp({ supabaseClientFactory = createClient, now = () => ne
     return res.status(204).send();
   });
 
+  app.post('/chat/attachments', rateLimit, requireAuth, async (req, res, next) => {
+    const membership = await appointmentScope(req, res);
+    if (!membership) return;
+    return next();
+  }, express.raw({ type: () => true, limit: MAX_CHAT_ATTACHMENT_BYTES, inflate: false }), (req, res) => {
+    const bytes = req.body;
+    const discardBytes = () => discardChatAttachmentBody(req);
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+      discardBytes();
+      return res.status(400).json({ error: 'O arquivo está vazio ou inválido.' });
+    }
+    const contentTypes = rawHeaderValues(req, 'content-type');
+    const encodedNames = rawHeaderValues(req, 'x-fisiozap-file-name');
+    if (contentTypes.length !== 1 || encodedNames.length !== 1) {
+      discardBytes();
+      return res.status(400).json({ error: 'Cabeçalhos do arquivo inválidos.' });
+    }
+    const mime = normalizeAttachmentMime(contentTypes[0]);
+    if (!mime) {
+      discardBytes();
+      return res.status(415).json({ error: 'Tipo de arquivo não aceito.' });
+    }
+    const name = decodeSafeAttachmentName(encodedNames[0]);
+    if (!name) {
+      discardBytes();
+      return res.status(422).json({ error: 'Nome de arquivo inválido.' });
+    }
+    if (!attachmentNameMatchesMime(name, mime)) {
+      discardBytes();
+      return res.status(422).json({ error: 'O nome do arquivo não corresponde ao tipo informado.' });
+    }
+    if (!matchesAttachmentSignature(mime, bytes)) {
+      discardBytes();
+      return res.status(422).json({ error: 'O conteúdo não corresponde ao tipo de arquivo informado.' });
+    }
+    const attachment = {
+      id: randomUUID(),
+      name,
+      size: bytes.length,
+      mime,
+      kind: attachmentKind(mime),
+    };
+    discardBytes();
+    return res.json({
+      message: 'Arquivo/Áudio recebido nesta sessão. Transcrição e análise de anexos ainda não estão disponíveis.',
+      mode: 'attachment_receipt',
+      attachment,
+    });
+  });
+
   app.post('/chat', rateLimit, requireAuth, async (req, res) => {
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     if (!message) return res.status(400).json({ error: 'A mensagem é obrigatória.' });
@@ -1051,7 +1131,16 @@ export function createApp({ supabaseClientFactory = createClient, now = () => ne
     });
   });
 
-  app.use((err, _req, res, _next) => {
+  app.use((err, req, res, _next) => {
+    if (isChatAttachmentPath(req.path)) {
+      discardChatAttachmentBody(req);
+      if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Arquivo excede o limite de 10 MiB.' });
+      if (err?.type === 'encoding.unsupported') return res.status(415).json({ error: 'Codificação do arquivo não aceita.' });
+      if (['entity.parse.failed', 'request.aborted', 'request.size.invalid'].includes(err?.type)) {
+        return res.status(400).json({ error: 'O corpo binário do arquivo é inválido.' });
+      }
+      return res.status(500).json({ error: 'Não foi possível receber o arquivo.' });
+    }
     if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Payload muito grande.' });
     console.error('backend_error', err?.message || 'unknown_error');
     return res.status(500).json({ error: 'Não foi possível concluir a solicitação.' });

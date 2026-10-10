@@ -77,6 +77,14 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
 }
 function startServer(options={},supabaseClientFactory=null,now=()=>new Date()){const database=mock(options);const app=createApp({supabaseClientFactory:supabaseClientFactory??(()=>database),now});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,database,close:()=>{server.close();server.closeAllConnections?.()}})))}
 async function request(baseUrl,path,options={}){return fetch(baseUrl+path,{...options,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...(options.headers||{})},body:options.body?JSON.stringify(options.body):undefined})}
+async function binaryRequest(baseUrl,body,{mime='application/pdf',filename='document.pdf',path='/chat/attachments',headers={}}={}){
+  return fetch(baseUrl+path,{method:'POST',body,headers:{
+    Authorization:'Bearer valid',
+    'Content-Type':mime,
+    'X-FisioZap-File-Name':encodeURIComponent(filename),
+    ...headers,
+  }});
+}
 
 test('authenticated Supabase data client forwards the verified JWT for RLS',async()=>{
   let accessToken;
@@ -115,6 +123,7 @@ test('CORS permits the organization selector header',async()=>{
     }});
     assert.equal(response.status,204);
     assert.match(response.headers.get('access-control-allow-headers'),/X-FisioZap-Organization-Id/i);
+    assert.match(response.headers.get('access-control-allow-headers'),/X-FisioZap-File-Name/i);
   }finally{await s.close()}
 });
 
@@ -405,6 +414,121 @@ test('financial payment changes are scoped and repeated state updates are idempo
 
 test('health remains public',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/health');assert.equal(r.status,200);await s.close()});
 test('chat remains authenticated',async()=>{const s=await startServer();assert.equal((await request(s.baseUrl,'/chat',{method:'POST',body:{message:'olá'}})).status,401);await s.close()});
+test('chat attachment endpoint authenticates and requires membership before reading binary content',async()=>{
+  const noMembership=await startServer({memberships:[]});
+  const signedOut=await startServer();
+  const unselectedOrg=await startServer();
+  try{
+    const body=Buffer.from('%PDF-1.7');
+    const unauthenticated=await binaryRequest(signedOut.baseUrl,body,{headers:{Authorization:''}});
+    assert.equal(unauthenticated.status,401);
+    assert.deepEqual(signedOut.database.calls,[]);
+    const denied=await binaryRequest(noMembership.baseUrl,body);
+    assert.equal(denied.status,403);
+    assert.deepEqual(noMembership.database.calls,['organization_members']);
+    const wrongOrganization=await binaryRequest(unselectedOrg.baseUrl,body,{headers:{'X-FisioZap-Organization-Id':financeForeignOrg}});
+    assert.equal(wrongOrganization.status,403);
+    assert.deepEqual(unselectedOrg.database.calls,['organization_members']);
+    for(const path of ['/chat/attachments/','/CHAT/ATTACHMENTS']){
+      const oversizedJson=await binaryRequest(signedOut.baseUrl,Buffer.alloc(70*1024),{
+        path,mime:'application/json',headers:{Authorization:''},
+      });
+      assert.equal(oversizedJson.status,401,path);
+    }
+    assert.deepEqual(signedOut.database.calls,[]);
+  }finally{await noMembership.close();await signedOut.close();await unselectedOrg.close()}
+});
+test('chat attachment endpoint accepts supported signatures and returns only receipt metadata',async()=>{
+  const cases=[
+    {mime:'application/pdf',filename:'relatório.pdf',body:Buffer.from('%PDF-1.7'),kind:'document'},
+    {mime:'image/jpeg',filename:'foto.jpg',body:Buffer.from([0xff,0xd8,0xff,0x00]),kind:'image'},
+    {mime:'image/png',filename:'foto.png',body:Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),kind:'image'},
+    {mime:'image/webp',filename:'foto.webp',body:Buffer.from('RIFFxxxxWEBP'),kind:'image'},
+    {mime:'audio/webm;codecs=opus',filename:'voz.webm',body:Buffer.from([0x1a,0x45,0xdf,0xa3,0x00]),kind:'audio',normalizedMime:'audio/webm'},
+    {mime:'audio/ogg;codecs=\"opus\"',filename:'voz.ogg',body:Buffer.from('OggS\\x00'),kind:'audio',normalizedMime:'audio/ogg'},
+    {mime:'audio/wav',filename:'voz.wav',body:Buffer.from('RIFFxxxxWAVE'),kind:'audio'},
+    {mime:'audio/mpeg',filename:'voz.mp3',body:Buffer.from('ID3\\x04\\x00'),kind:'audio'},
+    {mime:'audio/mp4',filename:'voz.m4a',body:Buffer.from('0000ftypM4A '),kind:'audio'},
+  ];
+  const s=await startServer();
+  try{
+    for(const item of cases){
+      const response=await binaryRequest(s.baseUrl,item.body,{mime:item.mime,filename:item.filename,headers:{'X-FisioZap-Organization-Id':financeOrg}});
+      assert.equal(response.status,200,item.mime);
+      const body=await response.json();
+      assert.equal(body.mode,'attachment_receipt');
+      assert.equal(body.message,'Arquivo/Áudio recebido nesta sessão. Transcrição e análise de anexos ainda não estão disponíveis.');
+      assert.deepEqual({...body.attachment,id:'replaced'},{
+        id:'replaced',name:item.filename,size:item.body.length,mime:item.normalizedMime??item.mime.split(';')[0],kind:item.kind,
+      });
+      assert.equal(Object.hasOwn(body.attachment,'url'),false);
+    }
+    assert.equal(s.database.calls.length,cases.length);
+    assert.ok(s.database.calls.every(table=>table==='organization_members'));
+  }finally{await s.close()}
+});
+test('chat attachment endpoint rejects unsupported, ambiguous, empty, and mismatched content safely',async()=>{
+  const s=await startServer();
+  try{
+    const rejected=[
+      {body:Buffer.from('%PDF-'),mime:'text/plain',status:415},
+      {body:Buffer.from('%PDF-'),mime:'application/json',status:415},
+      {body:Buffer.from('%PDF-'),mime:'image/png; charset=utf-8',status:415},
+      {body:Buffer.from('%PDF-'),mime:'audio/webm;codecs=opus;charset=utf-8',status:415},
+      {body:Buffer.alloc(0),mime:'application/pdf',status:400},
+      {body:Buffer.from('%PDF'),mime:'application/pdf',status:422},
+      {body:Buffer.from('%PDF-1.7'),mime:'image/png',status:422},
+      {body:Buffer.from('%PDF-1.7'),mime:'application/pdf',filename:'document.html',status:422},
+      {body:Buffer.from('%PDF-1.7'),mime:'application/pdf',filename:'document.exe',status:422},
+    ];
+    for(const item of rejected){
+      const response=await binaryRequest(s.baseUrl,item.body,{mime:item.mime,filename:item.filename});
+      assert.equal(response.status,item.status,item.mime);
+      const body=await response.json();
+      assert.equal(body.attachment,undefined);
+      assert.doesNotMatch(JSON.stringify(body),/%PDF|document\.pdf/i);
+    }
+    assert.ok(s.database.calls.every(table=>table==='organization_members'));
+  }finally{await s.close()}
+});
+test('chat attachment endpoint rejects unsafe encoded filenames and compressed content',async()=>{
+  const s=await startServer();
+  try{
+    const invalidNames=[
+      {value:'%2Fetc%2Fpasswd',status:422},
+      {value:'%5C..%5Cprivate.pdf',status:422},
+      {value:'bad%0Aname.pdf',status:422},
+      {value:'%zz',status:422},
+      {value:encodeURIComponent('a'.repeat(117)+'.pdf'),status:422},
+    ];
+    for(const item of invalidNames){
+      const response=await binaryRequest(s.baseUrl,Buffer.from('%PDF-1.7'),{headers:{'X-FisioZap-File-Name':item.value}});
+      assert.equal(response.status,item.status);
+      const body=await response.json();
+      assert.deepEqual(body,{error:'Nome de arquivo inválido.'});
+      assert.doesNotMatch(JSON.stringify(body),/passwd|private|bad/i);
+    }
+    const compressed=await binaryRequest(s.baseUrl,Buffer.from('%PDF-1.7'),{headers:{'Content-Encoding':'gzip'}});
+    assert.equal(compressed.status,415);
+    assert.deepEqual(await compressed.json(),{error:'Codificação do arquivo não aceita.'});
+  }finally{await s.close()}
+});
+test('chat attachment endpoint caps binary bodies at 10 MiB',async()=>{
+  const s=await startServer();
+  try{
+    const atLimit=Buffer.alloc(10*1024*1024);
+    atLimit.write('%PDF-1.7');
+    const accepted=await binaryRequest(s.baseUrl,atLimit);
+    assert.equal(accepted.status,200);
+    assert.equal((await accepted.json()).attachment.size,10*1024*1024);
+    const tooLarge=Buffer.alloc(10*1024*1024+1);
+    tooLarge.write('%PDF-1.7');
+    const response=await binaryRequest(s.baseUrl,tooLarge);
+    assert.equal(response.status,413);
+    assert.deepEqual(await response.json(),{error:'Arquivo excede o limite de 10 MiB.'});
+    assert.deepEqual(s.database.calls,['organization_members','organization_members']);
+  }finally{await s.close()}
+});
 test('chat rejects authenticated users without membership before reading operational data',async()=>{
   const s=await startServer({memberships:[]});
   try{

@@ -603,7 +603,7 @@ O MVP funcional do produto deve priorizar:
 | S4 | Atendimento e evolução | integrada em `TESTES`; issues #13–#16 abertas para QA funcional |
 | S5 | Notificações | integrada em `TESTES`; issues #21 e #23 abertas para QA funcional |
 | S6 | Financeiro | S6.1 integrada em `TESTES`; issue #25 aberta para homologação do proprietário |
-| S7 | Assistente IA | S7.1 integrada em `TESTES`; S7.2 adiciona resumo financeiro somente leitura, issue #30; homologação local pendente |
+| S7 | Assistente IA | S7.1 e S7.2 integradas em `TESTES`; S7.3 adiciona envio de áudio/anexos de sessão, issue #32, sem transcrição/interpretação; homologação local pendente |
 | S8 | WhatsApp | planejada |
 | S9 | Documentos/integrações | planejada |
 | S10 | Clínicas/equipes | planejada |

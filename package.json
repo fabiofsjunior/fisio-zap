@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "test:agenda-day-range": "node scripts/agenda-day-range.test.mjs",
+    "test:chat-composer": "node --import tsx --test scripts/tests/chat-composer.test.tsx",
     "bootstrap:test-accounts": "node --env-file=.env.local scripts/bootstrap-test-accounts.mjs",
     "test:smoke": "node --env-file=.env.local scripts/smoke-test.mjs",
     "test:rls": "node --env-file=.env.local scripts/rls-negative-test.mjs",
@@ -21,9 +22,14 @@
     "react-dom": "19.2.0"
   },
   "devDependencies": {
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/react": "16.3.3",
+    "@types/jsdom": "21.1.7",
     "@types/node": "22.19.3",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
+    "jsdom": "26.1.0",
+    "tsx": "4.23.15",
     "typescript": "latest"
   }
 }
