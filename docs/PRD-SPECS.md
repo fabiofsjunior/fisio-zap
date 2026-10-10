@@ -201,7 +201,9 @@ A disponibilidade dos módulos deve respeitar o papel do usuário.
 | Evoluções | ✓ | ✓ | ✓ | — |
 | Exercícios/protocolos | ✓ | ✓ | ✓ | — |
 | Notificações | ✓ | ✓ | ✓ | ✓ |
-| Financeiro | ✓ | ✓ | — | ✓ |
+| Financeiro | ✓ | ✓ | ✓ (próprios lançamentos) | ✓ |
+
+Owner e coordinator acessam o livro-caixa da organização. Administrative também tem acesso financeiro organizacional, sem receber acesso clínico ampliado. Professional consulta apenas os próprios lançamentos.
 
 A autorização real deve ocorrer no servidor/banco. Ocultar botão no frontend nunca é considerado controle de segurança.
 
@@ -599,8 +601,8 @@ O MVP funcional do produto deve priorizar:
 | S2 | Pacientes | próxima |
 | S3 | Agenda e rotina | planejada |
 | S4 | Atendimento e evolução | planejada |
-| S5 | Notificações | em andamento — S5.1 em `TESTES`; S5.2 em desenvolvimento |
-| S6 | Financeiro | planejada |
+| S5 | Notificações | integrada em `TESTES`; pendente de homologação funcional do proprietário |
+| S6 | Financeiro | em andamento — S6.1 em `feature/s6-financial-ledger`, issue #25 |
 | S7 | Assistente IA | planejada |
 | S8 | WhatsApp | planejada |
 | S9 | Documentos/integrações | planejada |

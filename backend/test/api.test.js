@@ -6,7 +6,7 @@ process.env.NEXT_PUBLIC_SUPABASE_URL='http://test.local';
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY='test-anon-key';
 const {createApp}=await import('../src/index.js');
 
-function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],operationErrors={}}={}){
+function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],operationErrors={}}={}){
   const memberRows=(memberships??[membership]).map(row=>({...row,user_id:row.user_id??user.id}));
   const rowsByTable={
     organization_members:memberRows,
@@ -18,12 +18,13 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
     clinical_encounter_protocols:encounterProtocols,
     notifications,
     appointments,
+    financial_entries:financialEntries,
   };
   const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):operator==='gte'?Date.parse(row[key])>=Date.parse(value):operator==='lt'?Date.parse(row[key])<Date.parse(value):row[key]===value));
   return {
     auth:{getUser:async token=>token==='valid'?{data:{user},error:null}:{data:{user:null},error:new Error('invalid token')}},
     from(table){
-      const state={table,values:null,filters:[],operation:'select',limit:null,orderBy:null};
+      const state={table,values:null,filters:[],operation:'select',limit:null,range:null,orderBy:[]};
       const tableRows=rowsByTable[table]??[];
       const matching=()=>matchingRows(tableRows,state.filters);
       const api={
@@ -33,8 +34,9 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
         gte(k,v){state.filters.push([k,v,'gte']);return api},
         lt(k,v){state.filters.push([k,v,'lt']);return api},
         ilike(){return api},
-        order(key,{ascending=true}={}){state.orderBy={key,ascending};return api},
+        order(key,{ascending=true}={}){state.orderBy.push({key,ascending});return api},
         limit(n){state.limit=n;return api},
+        range(start,end){state.range={start,end};return api},
         maybeSingle:async()=>{
           const operationError=operationErrors[state.table]?.[state.operation];
           if(operationError)return {data:null,error:operationError};
@@ -58,7 +60,8 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
           let data=matching();
           if(state.operation==='update')for(const row of data)Object.assign(row,state.values);
           if(state.operation==='delete'){for(const row of data)tableRows.splice(tableRows.indexOf(row),1);data=[]}
-          if(state.orderBy){const {key,ascending}=state.orderBy;data=[...data].sort((a,b)=>ascending?String(a[key]).localeCompare(String(b[key])):String(b[key]).localeCompare(String(a[key])))}
+          if(state.orderBy.length){data=[...data].sort((a,b)=>{for(const {key,ascending} of state.orderBy){const result=String(a[key]).localeCompare(String(b[key]));if(result)return ascending?result:-result}return 0})}
+          if(state.range)data=data.slice(state.range.start,state.range.end+1);
           if(state.limit!==null)data=data.slice(0,state.limit);
           return Promise.resolve({data,error:null}).then(resolve);
         }
@@ -262,6 +265,138 @@ test('protocol catalog read is authenticated',async()=>{
     assert.deepEqual((await response.json()).protocols,[]);
   }finally{await s.close()}
 });
+
+const financeUser='11111111-1111-4111-8111-111111111111';
+const financePeer='66666666-6666-4666-8666-666666666666';
+const financeOrg='22222222-2222-4222-8222-222222222222';
+const financeForeignOrg='77777777-7777-4777-8777-777777777777';
+function financialEntry(id,overrides={}){
+  const kind=overrides.kind??'income';
+  return {id,organization_id:financeOrg,professional_id:financeUser,patient_id:null,kind,entry_type:kind,amount:'1.00',description:'Sessão avulsa',occurred_at:'2026-12-01',due_date:null,paid_at:null,created_at:id,...overrides};
+}
+const financeHeaders={Authorization:'Bearer valid'};
+
+test('financial ledger is scoped by professional and month boundaries use occurred_at',async()=>{
+  const rows=[
+    financialEntry('10000000-0000-4000-8000-000000000001',{amount:'1.01',paid_at:'2026-12-02T12:00:00Z'}),
+    financialEntry('10000000-0000-4000-8000-000000000002',{kind:'expense',entry_type:'expense',amount:'2.50',occurred_at:'2026-12-15',due_date:'2027-01-10'}),
+    financialEntry('10000000-0000-4000-8000-000000000003',{kind:'expense',entry_type:'expense',amount:'9.00',occurred_at:'2026-12-31',due_date:'2027-01-15',paid_at:'2026-12-31T23:00:00Z'}),
+    financialEntry('10000000-0000-4000-8000-000000000004',{amount:'99.99',occurred_at:'2027-01-01',due_date:'2026-12-31'}),
+    financialEntry('10000000-0000-4000-8000-000000000005',{professional_id:financePeer,amount:'50.00'}),
+    financialEntry('10000000-0000-4000-8000-000000000006',{organization_id:financeForeignOrg,amount:'70.00'}),
+  ];
+  const s=await startServer({financialEntries:rows});
+  try{
+    const response=await request(s.baseUrl,'/financial-entries?month=2026-12',{headers:financeHeaders});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.deepEqual(body.entries.map(entry=>entry.id),[rows[2].id,rows[1].id,rows[0].id]);
+    assert.equal(body.entries[0].amount_cents,900);
+    assert.equal(body.entries[1].patient_id,null);
+    assert.equal(body.entries[1].due_date,'2027-01-10');
+    assert.equal(Object.hasOwn(body.entries[0],'organization_id'),false);
+    assert.equal(Object.hasOwn(body.entries[0],'professional_id'),false);
+    assert.deepEqual(body.summary,{income:{paid_cents:101,pending_cents:0},expense:{paid_cents:900,pending_cents:250}});
+    const january=await request(s.baseUrl,'/financial-entries?month=2027-01',{headers:financeHeaders});
+    assert.deepEqual((await january.json()).entries.map(entry=>entry.id),[rows[3].id]);
+  }finally{await s.close()}
+});
+
+test('financial managers see organization entries while professionals remain personal',async()=>{
+  const rows=[
+    financialEntry('20000000-0000-4000-8000-000000000001'),
+    financialEntry('20000000-0000-4000-8000-000000000002',{professional_id:financePeer}),
+    financialEntry('20000000-0000-4000-8000-000000000003',{organization_id:financeForeignOrg}),
+  ];
+  for(const role of ['owner','coordinator','administrative']){
+    const s=await startServer({membership:{organization_id:financeOrg,role},financialEntries:rows});
+    try{
+      const response=await request(s.baseUrl,'/financial-entries?month=2026-12',{headers:financeHeaders});
+      assert.equal(response.status,200,role);
+      assert.deepEqual((await response.json()).entries.map(entry=>entry.id),rows.slice(0,2).map(entry=>entry.id).reverse(),role);
+    }finally{await s.close()}
+  }
+});
+
+test('financial patient options are limited to patients visible to the profile',async()=>{
+  const patients=[
+    {id:'30000000-0000-4000-8000-000000000001',organization_id:financeOrg,professional_id:financeUser,full_name:'Paciente próprio'},
+    {id:'30000000-0000-4000-8000-000000000002',organization_id:financeOrg,professional_id:financePeer,full_name:'Paciente de colega'},
+    {id:'30000000-0000-4000-8000-000000000003',organization_id:financeForeignOrg,professional_id:financeUser,full_name:'Paciente estrangeiro'},
+  ];
+  const professional=await startServer({patients});
+  const owner=await startServer({membership:{organization_id:financeOrg,role:'owner'},patients});
+  try{
+    const mine=await request(professional.baseUrl,'/financial-entries/patient-options',{headers:financeHeaders});
+    assert.deepEqual((await mine.json()).patients,[{id:patients[0].id,full_name:'Paciente próprio'}]);
+    const managed=await request(owner.baseUrl,'/financial-entries/patient-options',{headers:financeHeaders});
+    assert.deepEqual((await managed.json()).patients,patients.slice(0,2).map(({id,full_name})=>({id,full_name})).reverse());
+  }finally{await professional.close();await owner.close()}
+});
+
+test('financial entry creation derives scope, stores exact cents, and validates patient visibility',async()=>{
+  const assigned={id:'30000000-0000-4000-8000-000000000001',organization_id:financeOrg,professional_id:financeUser,full_name:'Paciente próprio'};
+  const peer={id:'30000000-0000-4000-8000-000000000002',organization_id:financeOrg,professional_id:financePeer,full_name:'Paciente de colega'};
+  const s=await startServer({patients:[assigned,peer]});
+  try{
+    const payload={kind:'income',amount_cents:15007,description:'  Sessão domiciliar  ',occurred_at:'2026-12-10',due_date:'2026-12-15',patient_id:assigned.id,paid:true};
+    const response=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:payload});
+    assert.equal(response.status,201);
+    const {entry}=await response.json();
+    assert.equal(entry.amount_cents,15007);
+    assert.equal(entry.description,'Sessão domiciliar');
+    assert.equal(entry.patient_id,assigned.id);
+    assert.ok(entry.paid_at);
+    assert.equal(Object.hasOwn(entry,'organization_id'),false);
+    assert.equal(Object.hasOwn(entry,'professional_id'),false);
+
+    const hidden=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:{...payload,patient_id:peer.id}});
+    assert.equal(hidden.status,422);
+    const spoofed=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:{...payload,organization_id:financeForeignOrg}});
+    assert.equal(spoofed.status,422);
+  }finally{await s.close()}
+});
+
+test('financial creation rejects invalid precision, range, civil dates, and client-managed fields',async()=>{
+  const s=await startServer();
+  const base={kind:'expense',amount_cents:100,description:'Material',occurred_at:'2026-10-10'};
+  try{
+    for(const amount_cents of [0,-1,1.5,1.001,1_000_000_000_000,Number.MAX_SAFE_INTEGER]){
+      const response=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:{...base,amount_cents}});
+      assert.equal(response.status,422,`amount_cents=${amount_cents}`);
+    }
+    for(const occurred_at of ['2026-02-29','2026-13-01','2026-1-01','2026-06-31']){
+      const response=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:{...base,occurred_at}});
+      assert.equal(response.status,422,`occurred_at=${occurred_at}`);
+    }
+    const due=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:{...base,due_date:'2026-02-30'}});
+    assert.equal(due.status,422);
+    const managed=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:{...base,organization_id:financeOrg,professional_id:financeUser,paid_at:'2026-10-10T00:00:00Z'}});
+    assert.equal(managed.status,422);
+    const invalidMonth=await request(s.baseUrl,'/financial-entries?month=2026-13',{headers:financeHeaders});
+    assert.equal(invalidMonth.status,422);
+  }finally{await s.close()}
+});
+
+test('financial payment changes are scoped and repeated state updates are idempotent',async()=>{
+  const own=financialEntry('40000000-0000-4000-8000-000000000001');
+  const peer=financialEntry('40000000-0000-4000-8000-000000000002',{professional_id:financePeer});
+  const s=await startServer({financialEntries:[own,peer]});
+  try{
+    const hidden=await request(s.baseUrl,`/financial-entries/${peer.id}/payment`,{method:'PATCH',headers:financeHeaders,body:{paid:true}});
+    assert.equal(hidden.status,404);
+    const paid=await request(s.baseUrl,`/financial-entries/${own.id}/payment`,{method:'PATCH',headers:financeHeaders,body:{paid:true}});
+    assert.equal(paid.status,200);
+    const firstPaidAt=(await paid.json()).entry.paid_at;
+    const repeated=await request(s.baseUrl,`/financial-entries/${own.id}/payment`,{method:'PATCH',headers:financeHeaders,body:{paid:true}});
+    assert.equal((await repeated.json()).entry.paid_at,firstPaidAt);
+    const pending=await request(s.baseUrl,`/financial-entries/${own.id}/payment`,{method:'PATCH',headers:financeHeaders,body:{paid:false}});
+    assert.equal((await pending.json()).entry.paid_at,null);
+    const spoofed=await request(s.baseUrl,`/financial-entries/${own.id}/payment`,{method:'PATCH',headers:financeHeaders,body:{paid:true,paid_at:'2026-10-10T00:00:00Z'}});
+    assert.equal(spoofed.status,422);
+  }finally{await s.close()}
+});
+
 test('health remains public',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/health');assert.equal(r.status,200);await s.close()});
 test('chat remains authenticated',async()=>{const s=await startServer();assert.equal((await request(s.baseUrl,'/chat',{method:'POST',body:{message:'olá'}})).status,401);await s.close()});
 test('patients require authentication',async()=>{const s=await startServer();assert.equal((await request(s.baseUrl,'/patients')).status,401);await s.close()});
