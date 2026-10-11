@@ -6,7 +6,7 @@
 2. Nunca confiar no frontend para autorização.
 3. Cada operação deve validar identidade, organização e escopo do recurso no servidor.
 4. RLS é defesa obrigatória no banco e deve refletir o mesmo modelo de autorização.
-5. Segredos não entram no Git.
+5. Segredos não entram no Git, inclusive no histórico.
 6. `NEXT_PUBLIC_*` nunca pode conter service role keys, tokens privados ou credenciais.
 7. A IA recebe somente o contexto mínimo necessário.
 8. Conteúdo gerado por IA deve ser revisado pelo profissional antes de registros clínicos relevantes.
@@ -16,6 +16,22 @@
 12. Operações mutáveis/sensíveis devem possuir limites de requisição e validação de entrada.
 13. Dependências devem ser fixadas e o lockfile versionado.
 14. Mudanças de banco devem ser reproduzíveis por migrations revisadas.
+
+## Regra para repositório público
+
+Antes de tornar o repositório público, revisar:
+
+- todo o histórico Git em busca de segredos;
+- branches e tags que possam conter versões antigas;
+- GitHub Actions, logs de workflow e artifacts;
+- variáveis e secrets configurados no GitHub;
+- variáveis da Vercel e previews;
+- dumps, backups, exports, logs e screenshots;
+- dados pessoais, clínicos ou identificáveis;
+- credenciais de teste;
+- tokens, chaves privadas, service role keys e credenciais de provedores.
+
+Remover o segredo do arquivo atual **não remove o segredo do histórico**. Se um segredo real tiver sido commitado em qualquer momento, ele deve ser considerado comprometido, rotacionado no provedor e removido do histórico com uma operação de limpeza de histórico aprovada.
 
 ## Modelo de autorização
 
@@ -72,4 +88,3 @@ Nunca versionar:
 - service role keys;
 - credenciais do WhatsApp;
 - chaves de provedores de IA.
-

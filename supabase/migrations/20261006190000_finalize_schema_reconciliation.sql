@@ -12,11 +12,35 @@ begin
       and column_name='status'
       and udt_name='text'
   ) then
+    -- The legacy CHECK was parsed against text and can block conversion to the enum.
+    -- Drop it before the cast, then recreate an enum-compatible constraint below.
+    alter table public.appointments
+      drop constraint if exists appointments_status_check;
+
+    -- PostgreSQL cannot automatically cast a text default to an enum.
+    alter table public.appointments
+      alter column status drop default;
+
     alter table public.appointments
       alter column status type public.appointment_status
       using status::text::public.appointment_status;
   end if;
 end $$;
+
+-- Rebuild the legacy CHECK using enum values; safe when this migration is replayed.
+alter table public.appointments
+  drop constraint if exists appointments_status_check;
+
+alter table public.appointments
+  add constraint appointments_status_check
+  check (status in (
+    'scheduled'::public.appointment_status,
+    'confirmed'::public.appointment_status,
+    'completed'::public.appointment_status,
+    'cancelled'::public.appointment_status,
+    'no_show'::public.appointment_status,
+    'rescheduled'::public.appointment_status
+  ));
 
 alter table public.appointments
   alter column status set default 'scheduled'::public.appointment_status;

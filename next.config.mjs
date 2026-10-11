@@ -1,6 +1,6 @@
+import { localTunnelConfig } from './scripts/local-tunnel-config.mjs';
+
 /** @type {import('next').NextConfig} */
-const nextConfig = {
-  allowedDevOrigins: ['127.0.0.1', 'localhost'],
-};
+const nextConfig = localTunnelConfig(process.env);
 
 export default nextConfig;

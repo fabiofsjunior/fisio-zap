@@ -3,6 +3,9 @@ import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { createClient } from '@supabase/supabase-js';
 
 export async function GET() {
+  if (process.env.FISIOZAP_LOCAL_TUNNEL === 'true') {
+    return NextResponse.json({ error: 'Diagnóstico administrativo indisponível pelo túnel.' }, { status: 403 });
+  }
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'Autenticação necessária.' }, { status: 401 });

@@ -7,6 +7,9 @@ function randomPart(length = 8) {
 }
 
 export async function POST() {
+  if (process.env.FISIOZAP_LOCAL_TUNNEL === 'true') {
+    return NextResponse.json({ error: 'Criação administrativa indisponível pelo túnel.' }, { status: 403 });
+  }
   const supabase = await createSupabaseServerClient();
   const { data: { user: currentUser } } = await supabase.auth.getUser();
   if (!currentUser) return NextResponse.json({ error: 'Autenticação necessária.' }, { status: 401 });
