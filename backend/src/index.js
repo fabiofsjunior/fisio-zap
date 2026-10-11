@@ -1535,6 +1535,7 @@ export function createApp({ supabaseClientFactory = createClient, storageAdminCl
       if (['entity.parse.failed', 'request.aborted', 'request.size.invalid'].includes(err?.type)) {
         return res.status(400).json({ error: 'O corpo binário do arquivo é inválido.' });
       }
+      console.error('professional_document_file_error', err?.type || err?.name || 'unknown');
       return res.status(500).json({ error: 'Não foi possível receber o arquivo.' });
     }
     if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Payload muito grande.' });
