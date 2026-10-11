@@ -373,9 +373,11 @@ O desenvolvimento será incremental. Cada etapa precisa ser validada antes de av
 - smoke tests;
 - testes negativos de isolamento.
 
-**Status:** em validação final.
+**Status:** concluída e promovida para a `main` em 08/10/2026.
 
 ### S2 — Pacientes
+**Status:** em implementação e validação na `TESTES`.
+
 **Objetivo:** criar o primeiro módulo funcional de negócio.
 
 - CRUD de pacientes;
@@ -606,7 +608,7 @@ O FisioZap está na transição entre a **fundação técnica** e o primeiro mó
 
 A sequência imediata é:
 
-**S1.5 → concluir validação do Supabase → S2 Pacientes.**
+**S1.5 → S2 Pacientes → S3 Agenda e rotina.**
 
 Não iniciar módulos posteriores enquanto a base de autenticação, banco e segurança não estiver validada.
 

@@ -1,120 +1,1154 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createApp } from '../src/index.js';
+process.env.NODE_ENV='test';
+process.env.NEXT_PUBLIC_SUPABASE_URL='http://test.local';
+process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY='test-anon-key';
+const {createApp}=await import('../src/index.js');
+const {getTranscriptionConfig,transcribeWithOpenAI}=await import('../src/chat-transcription.js');
 
-function startServer({ user = null } = {}) {
-  const supabaseClientFactory = () => ({
-    auth: {
-      getUser: async (token) =>
-        token === 'valid'
-          ? { data: { user }, error: null }
-          : { data: { user: null }, error: new Error('invalid token') },
-    },
-  });
+function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],operationErrors={},selectCountOverrides={}}={}){
+  const memberRows=(memberships??[membership]).map(row=>({...row,user_id:row.user_id??user.id}));
+  const calls=[];
+  const queries=[];
+  const rowsByTable={
+    organization_members:memberRows,
+    patients,
+    clinical_encounters:encounters,
+    clinical_evolutions:evolutions,
+    clinical_exercises:exercises,
+    clinical_protocols:protocols,
+    clinical_encounter_protocols:encounterProtocols,
+    notifications,
+    appointments,
+    financial_entries:financialEntries,
+  };
+  const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):operator==='gte'?Date.parse(row[key])>=Date.parse(value):operator==='lt'?Date.parse(row[key])<Date.parse(value):row[key]===value));
+  return {
+    calls,queries,
+    auth:{getUser:async token=>token==='valid'?{data:{user},error:null}:{data:{user:null},error:new Error('invalid token')}},
+    from(table){
+      calls.push(table);
+      const state={table,values:null,filters:[],operation:'select',limit:null,range:null,orderBy:[]};
+      queries.push(state);
+      const tableRows=rowsByTable[table]??[];
+      const matching=()=>matchingRows(tableRows,state.filters);
+      const api={
+        select(columns,options){state.columns=columns;state.selectOptions=options;return api},
+        eq(k,v){state.filters.push([k,v,'eq']);return api},
+        in(k,values){state.filters.push([k,values,'in']);return api},
+        gte(k,v){state.filters.push([k,v,'gte']);return api},
+        lt(k,v){state.filters.push([k,v,'lt']);return api},
+        ilike(){return api},
+        order(key,{ascending=true}={}){state.orderBy.push({key,ascending});return api},
+        limit(n){state.limit=n;return api},
+        range(start,end){state.range={start,end};return api},
+        maybeSingle:async()=>{
+          const operationError=operationErrors[state.table]?.[state.operation];
+          if(operationError)return {data:null,error:operationError};
+          const rows=matching();
+          if(state.operation==='update'&&rows[0])Object.assign(rows[0],state.values);
+          if(state.operation==='delete'&&rows[0])tableRows.splice(tableRows.indexOf(rows[0]),1);
+          return {data:rows[0]??null,error:null};
+        },
+        insert(v){state.operation='insert';state.values=v;return api},
+        update(v){state.operation='update';state.values=v;return api},
+        delete(){state.operation='delete';return api},
+        single:async()=>{
+          const operationError=operationErrors[state.table]?.[state.operation];
+          if(operationError)return {data:null,error:operationError};
+          if(state.operation==='insert'){const row={...state.values};tableRows.push(row);return {data:row,error:null};}
+          return {data:state.values,error:null};
+        },
+        then(resolve){
+          const operationError=operationErrors[state.table]?.[state.operation];
+          if(operationError)return Promise.resolve({data:null,error:operationError,count:null}).then(resolve);
+          let data=matching();
+          const count=Object.hasOwn(selectCountOverrides,state.table)?selectCountOverrides[state.table]:data.length;
+          if(state.operation==='update')for(const row of data)Object.assign(row,state.values);
+          if(state.operation==='delete'){for(const row of data)tableRows.splice(tableRows.indexOf(row),1);data=[]}
+          if(state.orderBy.length){data=[...data].sort((a,b)=>{for(const {key,ascending} of state.orderBy){const result=String(a[key]).localeCompare(String(b[key]));if(result)return ascending?result:-result}return 0})}
+          if(state.range)data=data.slice(state.range.start,state.range.end+1);
+          if(state.limit!==null)data=data.slice(0,state.limit);
+          return Promise.resolve({data,error:null,count}).then(resolve);
+        }
+      }; return api;
+    }
+  };
+}
+function startServer(options={},supabaseClientFactory=null,now=()=>new Date(),appOptions={}){const database=mock(options);const app=createApp({supabaseClientFactory:supabaseClientFactory??(()=>database),now,...appOptions});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,database,close:()=>{server.close();server.closeAllConnections?.()}})))}
+async function request(baseUrl,path,options={}){return fetch(baseUrl+path,{...options,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...(options.headers||{})},body:options.body?JSON.stringify(options.body):undefined})}
+async function binaryRequest(baseUrl,body,{mime='application/pdf',filename='document.pdf',path='/chat/attachments',headers={},signal}={}){
+return fetch(baseUrl+path,{method:'POST',body,signal,headers:{
+    Authorization:'Bearer valid',
+    'Content-Type':mime,
+    'X-FisioZap-File-Name':encodeURIComponent(filename),
+    ...headers,
+  }});
+}
 
-  const app = createApp({ supabaseClientFactory });
-  const server = http.createServer(app);
+test('authenticated Supabase data client forwards the verified JWT for RLS',async()=>{
+  let accessToken;
+  const factory=(_url,_key,options)=>{accessToken=options.accessToken;return mock()};
+  const s=await startServer({},factory);
+  try{
+    const response=await request(s.baseUrl,'/encounters',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    assert.equal(await accessToken(),'valid');
+  }finally{await s.close()}
+});
 
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      resolve({
-        baseUrl: `http://127.0.0.1:${port}`,
-        close: () => new Promise((done) => server.close(done)),
+test('multiple memberships require an explicit authorized organization selection',async()=>{
+  const memberships=[
+    {organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},
+    {organization_id:'44444444-4444-4444-8444-444444444444',role:'professional'},
+  ];
+  const s=await startServer({memberships});
+  const headers={Authorization:'Bearer valid'};
+  try{
+    assert.equal((await request(s.baseUrl,'/encounters',{headers})).status,409);
+    const selected=await request(s.baseUrl,'/encounters',{headers:{...headers,'X-FisioZap-Organization-Id':memberships[1].organization_id}});
+    assert.equal(selected.status,200);
+    const unauthorized=await request(s.baseUrl,'/encounters',{headers:{...headers,'X-FisioZap-Organization-Id':'55555555-5555-4555-8555-555555555555'}});
+    assert.equal(unauthorized.status,403);
+  }finally{await s.close()}
+});
+
+test('CORS permits the organization selector header',async()=>{
+  const s=await startServer();
+  try{
+    const response=await request(s.baseUrl,'/encounters',{method:'OPTIONS',headers:{
+      Origin:'http://localhost:3000',
+      'Access-Control-Request-Method':'GET',
+      'Access-Control-Request-Headers':'x-fisiozap-organization-id',
+    }});
+    assert.equal(response.status,204);
+    assert.match(response.headers.get('access-control-allow-headers'),/X-FisioZap-Organization-Id/i);
+    assert.match(response.headers.get('access-control-allow-headers'),/X-FisioZap-File-Name/i);
+    assert.match(response.headers.get('access-control-allow-headers'),/X-Transcription-Consent/i);
+  }finally{await s.close()}
+});
+
+test('professionals cannot start encounters for another professional’s patient',async()=>{
+  const patient={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'55555555-5555-4555-8555-555555555555'};
+  const s=await startServer({patients:[patient]});
+  try{
+    const response=await request(s.baseUrl,'/encounters',{method:'POST',headers:{Authorization:'Bearer valid'},body:{patient_id:patient.id}});
+    assert.equal(response.status,403);
+  }finally{await s.close()}
+});
+
+test('draft evolution can be edited by its author while its encounter is open',async()=>{
+  const encounter={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',status:'in_progress'};
+  const evolution={id:'44444444-4444-4444-8444-444444444444',organization_id:encounter.organization_id,encounter_id:encounter.id,author_id:'11111111-1111-4111-8111-111111111111',content:'Rascunho anterior',status:'draft'};
+  const s=await startServer({encounters:[encounter],evolutions:[evolution]});
+  try{
+    const response=await request(s.baseUrl,'/evolutions/'+evolution.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{content:'  Revisado  '}});
+    assert.equal(response.status,200);
+    assert.equal((await response.json()).evolution.content,'Revisado');
+  }finally{await s.close()}
+});
+
+test('confirmed evolutions remain immutable through the API',async()=>{
+  const evolution={id:'44444444-4444-4444-8444-444444444444',organization_id:'22222222-2222-4222-8222-222222222222',encounter_id:'33333333-3333-4333-8333-333333333333',author_id:'11111111-1111-4111-8111-111111111111',content:'Confirmada',status:'confirmed'};
+  const s=await startServer({evolutions:[evolution]});
+  try{
+    const response=await request(s.baseUrl,'/evolutions/'+evolution.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{content:'Alteração não permitida'}});
+    assert.equal(response.status,409);
+  }finally{await s.close()}
+});
+
+test('encounter completion is rejected while a draft evolution remains',async()=>{
+  const encounter={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',status:'in_progress'};
+  const evolution={id:'44444444-4444-4444-8444-444444444444',organization_id:encounter.organization_id,encounter_id:encounter.id,author_id:'11111111-1111-4111-8111-111111111111',content:'Rascunho',status:'draft'};
+  const s=await startServer({encounters:[encounter],evolutions:[evolution]});
+  try{
+    const response=await request(s.baseUrl,'/encounters/'+encounter.id+'/complete',{method:'PATCH',headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,409);
+  }finally{await s.close()}
+});
+
+test('professional cannot read another professional’s encounter history',async()=>{
+  const encounter={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'55555555-5555-4555-8555-555555555555',status:'completed'};
+  const s=await startServer({encounters:[encounter]});
+  try{
+    const response=await request(s.baseUrl,'/encounters/'+encounter.id+'/evolutions',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,404);
+  }finally{await s.close()}
+});
+
+test('protocol association removal accepts the documented body contract',async()=>{
+  const s=await startServer();
+  try{
+    const response=await request(s.baseUrl,'/encounters/33333333-3333-4333-8333-333333333333/protocols',{method:'DELETE',headers:{Authorization:'Bearer valid'},body:{}});
+    assert.equal(response.status,422);
+  }finally{await s.close()}
+});
+
+test('professional encounter history is scoped while owner can review organization history',async()=>{
+  const patientId='33333333-3333-4333-8333-333333333333';
+  const own={id:'44444444-4444-4444-8444-444444444444',organization_id:'22222222-2222-4222-8222-222222222222',patient_id:patientId,professional_id:'11111111-1111-4111-8111-111111111111',status:'in_progress',started_at:'2026-10-09T12:00:00Z'};
+  const peer={id:'55555555-5555-4555-8555-555555555555',organization_id:own.organization_id,patient_id:patientId,professional_id:'66666666-6666-4666-8666-666666666666',status:'completed',started_at:'2026-10-08T12:00:00Z'};
+  const professional=await startServer({encounters:[own,peer]});
+  const owner=await startServer({membership:{organization_id:own.organization_id,role:'owner'},encounters:[own,peer]});
+  try{
+    const mine=await request(professional.baseUrl,'/encounters?patient_id='+patientId,{headers:{Authorization:'Bearer valid'}});
+    assert.equal(mine.status,200);
+    assert.deepEqual((await mine.json()).encounters.map(item=>item.id),[own.id]);
+    const managed=await request(owner.baseUrl,'/encounters?patient_id='+patientId,{headers:{Authorization:'Bearer valid'}});
+    assert.equal(managed.status,200);
+    assert.deepEqual((await managed.json()).encounters.map(item=>item.id),[own.id,peer.id]);
+  }finally{await professional.close();await owner.close()}
+});
+
+test('professional can start an encounter for an assigned patient',async()=>{
+  const patient={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111'};
+  const s=await startServer({patients:[patient]});
+  try{
+    const response=await request(s.baseUrl,'/encounters',{method:'POST',headers:{Authorization:'Bearer valid'},body:{patient_id:patient.id}});
+    assert.equal(response.status,201);
+    const body=await response.json();
+    assert.equal(body.encounter.patient_id,patient.id);
+    assert.equal(body.encounter.organization_id,patient.organization_id);
+    assert.equal(body.encounter.professional_id,patient.professional_id);
+  }finally{await s.close()}
+});
+
+test('only the evolution author can edit a draft and completed encounters reject draft edits',async()=>{
+  const encounter={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',status:'in_progress'};
+  const peerDraft={id:'44444444-4444-4444-8444-444444444444',organization_id:encounter.organization_id,encounter_id:encounter.id,author_id:'55555555-5555-4555-8555-555555555555',content:'Rascunho de outro autor',status:'draft'};
+  const s=await startServer({encounters:[encounter],evolutions:[peerDraft]});
+  try{
+    const forbidden=await request(s.baseUrl,'/evolutions/'+peerDraft.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{content:'Edição indevida'}});
+    assert.equal(forbidden.status,403);
+  }finally{await s.close()}
+
+  const completed={...encounter,status:'completed'};
+  const ownDraft={...peerDraft,id:'66666666-6666-4666-8666-666666666666',author_id:'11111111-1111-4111-8111-111111111111'};
+  const completedServer=await startServer({encounters:[completed],evolutions:[ownDraft]});
+  try{
+    const conflict=await request(completedServer.baseUrl,'/evolutions/'+ownDraft.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{content:'Edição após finalizar'}});
+    assert.equal(conflict.status,409);
+  }finally{await completedServer.close()}
+});
+
+test('protocol association supports add, read with in-filter, and valid removal',async()=>{
+  const encounter={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',status:'in_progress'};
+  const protocol={id:'44444444-4444-4444-8444-444444444444',organization_id:encounter.organization_id,title:'Protocolo sintético',description:'Fixture de teste'};
+  const s=await startServer({encounters:[encounter],protocols:[protocol]});
+  try{
+    const linked=await request(s.baseUrl,'/encounters/'+encounter.id+'/protocols',{method:'POST',headers:{Authorization:'Bearer valid'},body:{protocol_id:protocol.id}});
+    assert.equal(linked.status,201);
+    const listed=await request(s.baseUrl,'/encounters/'+encounter.id+'/protocols',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(listed.status,200);
+    assert.deepEqual((await listed.json()).protocols.map(item=>item.id),[protocol.id]);
+    const removed=await request(s.baseUrl,'/encounters/'+encounter.id+'/protocols',{method:'DELETE',headers:{Authorization:'Bearer valid'},body:{protocol_id:protocol.id}});
+    assert.equal(removed.status,204);
+    const after=await request(s.baseUrl,'/encounters/'+encounter.id+'/protocols',{headers:{Authorization:'Bearer valid'}});
+    assert.deepEqual((await after.json()).protocols,[]);
+  }finally{await s.close()}
+});
+
+test('database completion race is reported as HTTP 409',async()=>{
+  const encounter={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',status:'in_progress'};
+  const s=await startServer({encounters:[encounter],operationErrors:{clinical_encounters:{update:{code:'P0001'}}}});
+  try{
+    const response=await request(s.baseUrl,'/encounters/'+encounter.id+'/complete',{method:'PATCH',headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,409);
+  }finally{await s.close()}
+});
+
+test('exercise creation validates payload before querying an encounter',async()=>{
+  const s=await startServer();
+  try{
+    const response=await request(s.baseUrl,'/encounters/33333333-3333-4333-8333-333333333333/exercises',{method:'POST',headers:{Authorization:'Bearer valid'},body:{title:'   '}});
+    assert.equal(response.status,422);
+  }finally{await s.close()}
+});
+
+test('protocol catalog writes require owner or coordinator',async()=>{
+  const s=await startServer({membership:{organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'}});
+  try{
+    const response=await request(s.baseUrl,'/protocols',{method:'POST',headers:{Authorization:'Bearer valid'},body:{title:'Protocolo sintético'}});
+    assert.equal(response.status,403);
+  }finally{await s.close()}
+});
+
+test('protocol catalog read is authenticated',async()=>{
+  const s=await startServer();
+  try{
+    const response=await request(s.baseUrl,'/protocols',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    assert.deepEqual((await response.json()).protocols,[]);
+  }finally{await s.close()}
+});
+
+const financeUser='11111111-1111-4111-8111-111111111111';
+const financePeer='66666666-6666-4666-8666-666666666666';
+const financeOrg='22222222-2222-4222-8222-222222222222';
+const financeForeignOrg='77777777-7777-4777-8777-777777777777';
+function financialEntry(id,overrides={}){
+  const kind=overrides.kind??'income';
+  return {id,organization_id:financeOrg,professional_id:financeUser,patient_id:null,kind,entry_type:kind,amount:'1.00',description:'Sessão avulsa',occurred_at:'2026-12-01',due_date:null,paid_at:null,created_at:id,...overrides};
+}
+const financeHeaders={Authorization:'Bearer valid'};
+
+test('financial ledger is scoped by professional and month boundaries use occurred_at',async()=>{
+  const rows=[
+    financialEntry('10000000-0000-4000-8000-000000000001',{amount:'1.01',paid_at:'2026-12-02T12:00:00Z'}),
+    financialEntry('10000000-0000-4000-8000-000000000002',{kind:'expense',entry_type:'expense',amount:'2.50',occurred_at:'2026-12-15',due_date:'2027-01-10'}),
+    financialEntry('10000000-0000-4000-8000-000000000003',{kind:'expense',entry_type:'expense',amount:'9.00',occurred_at:'2026-12-31',due_date:'2027-01-15',paid_at:'2026-12-31T23:00:00Z'}),
+    financialEntry('10000000-0000-4000-8000-000000000004',{amount:'99.99',occurred_at:'2027-01-01',due_date:'2026-12-31'}),
+    financialEntry('10000000-0000-4000-8000-000000000005',{professional_id:financePeer,amount:'50.00'}),
+    financialEntry('10000000-0000-4000-8000-000000000006',{organization_id:financeForeignOrg,amount:'70.00'}),
+  ];
+  const s=await startServer({financialEntries:rows});
+  try{
+    const response=await request(s.baseUrl,'/financial-entries?month=2026-12',{headers:financeHeaders});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.deepEqual(body.entries.map(entry=>entry.id),[rows[2].id,rows[1].id,rows[0].id]);
+    assert.equal(body.entries[0].amount_cents,900);
+    assert.equal(body.entries[1].patient_id,null);
+    assert.equal(body.entries[1].due_date,'2027-01-10');
+    assert.equal(Object.hasOwn(body.entries[0],'organization_id'),false);
+    assert.equal(Object.hasOwn(body.entries[0],'professional_id'),false);
+    assert.deepEqual(body.summary,{income:{paid_cents:101,pending_cents:0},expense:{paid_cents:900,pending_cents:250}});
+    const january=await request(s.baseUrl,'/financial-entries?month=2027-01',{headers:financeHeaders});
+    assert.deepEqual((await january.json()).entries.map(entry=>entry.id),[rows[3].id]);
+  }finally{await s.close()}
+});
+
+test('financial managers see organization entries while professionals remain personal',async()=>{
+  const rows=[
+    financialEntry('20000000-0000-4000-8000-000000000001'),
+    financialEntry('20000000-0000-4000-8000-000000000002',{professional_id:financePeer}),
+    financialEntry('20000000-0000-4000-8000-000000000003',{organization_id:financeForeignOrg}),
+  ];
+  for(const role of ['owner','coordinator','administrative']){
+    const s=await startServer({membership:{organization_id:financeOrg,role},financialEntries:rows});
+    try{
+      const response=await request(s.baseUrl,'/financial-entries?month=2026-12',{headers:financeHeaders});
+      assert.equal(response.status,200,role);
+      assert.deepEqual((await response.json()).entries.map(entry=>entry.id),rows.slice(0,2).map(entry=>entry.id).reverse(),role);
+    }finally{await s.close()}
+  }
+});
+
+test('financial patient options are limited to patients visible to the profile',async()=>{
+  const patients=[
+    {id:'30000000-0000-4000-8000-000000000001',organization_id:financeOrg,professional_id:financeUser,full_name:'Paciente próprio'},
+    {id:'30000000-0000-4000-8000-000000000002',organization_id:financeOrg,professional_id:financePeer,full_name:'Paciente de colega'},
+    {id:'30000000-0000-4000-8000-000000000003',organization_id:financeForeignOrg,professional_id:financeUser,full_name:'Paciente estrangeiro'},
+  ];
+  const professional=await startServer({patients});
+  const owner=await startServer({membership:{organization_id:financeOrg,role:'owner'},patients});
+  try{
+    const mine=await request(professional.baseUrl,'/financial-entries/patient-options',{headers:financeHeaders});
+    assert.deepEqual((await mine.json()).patients,[{id:patients[0].id,full_name:'Paciente próprio'}]);
+    const managed=await request(owner.baseUrl,'/financial-entries/patient-options',{headers:financeHeaders});
+    assert.deepEqual((await managed.json()).patients,patients.slice(0,2).map(({id,full_name})=>({id,full_name})).reverse());
+  }finally{await professional.close();await owner.close()}
+});
+
+test('financial entry creation derives scope, stores exact cents, and validates patient visibility',async()=>{
+  const assigned={id:'30000000-0000-4000-8000-000000000001',organization_id:financeOrg,professional_id:financeUser,full_name:'Paciente próprio'};
+  const peer={id:'30000000-0000-4000-8000-000000000002',organization_id:financeOrg,professional_id:financePeer,full_name:'Paciente de colega'};
+  const s=await startServer({patients:[assigned,peer]});
+  try{
+    const payload={kind:'income',amount_cents:15007,description:'  Sessão domiciliar  ',occurred_at:'2026-12-10',due_date:'2026-12-15',patient_id:assigned.id,paid:true};
+    const response=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:payload});
+    assert.equal(response.status,201);
+    const {entry}=await response.json();
+    assert.equal(entry.amount_cents,15007);
+    assert.equal(entry.description,'Sessão domiciliar');
+    assert.equal(entry.patient_id,assigned.id);
+    assert.ok(entry.paid_at);
+    assert.equal(Object.hasOwn(entry,'organization_id'),false);
+    assert.equal(Object.hasOwn(entry,'professional_id'),false);
+
+    const hidden=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:{...payload,patient_id:peer.id}});
+    assert.equal(hidden.status,422);
+    const spoofed=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:{...payload,organization_id:financeForeignOrg}});
+    assert.equal(spoofed.status,422);
+  }finally{await s.close()}
+});
+
+test('financial creation rejects invalid precision, range, civil dates, and client-managed fields',async()=>{
+  const s=await startServer();
+  const base={kind:'expense',amount_cents:100,description:'Material',occurred_at:'2026-10-10'};
+  try{
+    for(const amount_cents of [0,-1,1.5,1.001,1_000_000_000_000,Number.MAX_SAFE_INTEGER]){
+      const response=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:{...base,amount_cents}});
+      assert.equal(response.status,422,`amount_cents=${amount_cents}`);
+    }
+    for(const occurred_at of ['2026-02-29','2026-13-01','2026-1-01','2026-06-31']){
+      const response=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:{...base,occurred_at}});
+      assert.equal(response.status,422,`occurred_at=${occurred_at}`);
+    }
+    const due=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:{...base,due_date:'2026-02-30'}});
+    assert.equal(due.status,422);
+    const managed=await request(s.baseUrl,'/financial-entries',{method:'POST',headers:financeHeaders,body:{...base,organization_id:financeOrg,professional_id:financeUser,paid_at:'2026-10-10T00:00:00Z'}});
+    assert.equal(managed.status,422);
+    const invalidMonth=await request(s.baseUrl,'/financial-entries?month=2026-13',{headers:financeHeaders});
+    assert.equal(invalidMonth.status,422);
+  }finally{await s.close()}
+});
+
+test('financial payment changes are scoped and repeated state updates are idempotent',async()=>{
+  const own=financialEntry('40000000-0000-4000-8000-000000000001');
+  const peer=financialEntry('40000000-0000-4000-8000-000000000002',{professional_id:financePeer});
+  const s=await startServer({financialEntries:[own,peer]});
+  try{
+    const hidden=await request(s.baseUrl,`/financial-entries/${peer.id}/payment`,{method:'PATCH',headers:financeHeaders,body:{paid:true}});
+    assert.equal(hidden.status,404);
+    const paid=await request(s.baseUrl,`/financial-entries/${own.id}/payment`,{method:'PATCH',headers:financeHeaders,body:{paid:true}});
+    assert.equal(paid.status,200);
+    const firstPaidAt=(await paid.json()).entry.paid_at;
+    const repeated=await request(s.baseUrl,`/financial-entries/${own.id}/payment`,{method:'PATCH',headers:financeHeaders,body:{paid:true}});
+    assert.equal((await repeated.json()).entry.paid_at,firstPaidAt);
+    const pending=await request(s.baseUrl,`/financial-entries/${own.id}/payment`,{method:'PATCH',headers:financeHeaders,body:{paid:false}});
+    assert.equal((await pending.json()).entry.paid_at,null);
+    const spoofed=await request(s.baseUrl,`/financial-entries/${own.id}/payment`,{method:'PATCH',headers:financeHeaders,body:{paid:true,paid_at:'2026-10-10T00:00:00Z'}});
+    assert.equal(spoofed.status,422);
+  }finally{await s.close()}
+});
+
+test('health remains public',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/health');assert.equal(r.status,200);await s.close()});
+test('chat remains authenticated',async()=>{const s=await startServer();assert.equal((await request(s.baseUrl,'/chat',{method:'POST',body:{message:'olá'}})).status,401);await s.close()});
+test('chat attachment endpoint authenticates and requires membership before reading binary content',async()=>{
+  const noMembership=await startServer({memberships:[]});
+  const signedOut=await startServer();
+  const unselectedOrg=await startServer();
+  try{
+    const body=Buffer.from('%PDF-1.7');
+    const unauthenticated=await binaryRequest(signedOut.baseUrl,body,{headers:{Authorization:''}});
+    assert.equal(unauthenticated.status,401);
+    assert.deepEqual(signedOut.database.calls,[]);
+    const denied=await binaryRequest(noMembership.baseUrl,body);
+    assert.equal(denied.status,403);
+    assert.deepEqual(noMembership.database.calls,['organization_members']);
+    const wrongOrganization=await binaryRequest(unselectedOrg.baseUrl,body,{headers:{'X-FisioZap-Organization-Id':financeForeignOrg}});
+    assert.equal(wrongOrganization.status,403);
+    assert.deepEqual(unselectedOrg.database.calls,['organization_members']);
+    for(const path of ['/chat/attachments/','/CHAT/ATTACHMENTS']){
+      const oversizedJson=await binaryRequest(signedOut.baseUrl,Buffer.alloc(70*1024),{
+        path,mime:'application/json',headers:{Authorization:''},
       });
+      assert.equal(oversizedJson.status,401,path);
+    }
+    assert.deepEqual(signedOut.database.calls,[]);
+  }finally{await noMembership.close();await signedOut.close();await unselectedOrg.close()}
+});
+test('chat attachment endpoint accepts supported signatures and returns only receipt metadata',async()=>{
+  const cases=[
+    {mime:'application/pdf',filename:'relatório.pdf',body:Buffer.from('%PDF-1.7'),kind:'document'},
+    {mime:'image/jpeg',filename:'foto.jpg',body:Buffer.from([0xff,0xd8,0xff,0x00]),kind:'image'},
+    {mime:'image/png',filename:'foto.png',body:Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),kind:'image'},
+    {mime:'image/webp',filename:'foto.webp',body:Buffer.from('RIFFxxxxWEBP'),kind:'image'},
+    {mime:'audio/webm;codecs=opus',filename:'voz.webm',body:Buffer.from([0x1a,0x45,0xdf,0xa3,0x00]),kind:'audio',normalizedMime:'audio/webm'},
+    {mime:'audio/ogg;codecs=\"opus\"',filename:'voz.ogg',body:Buffer.from('OggS\\x00'),kind:'audio',normalizedMime:'audio/ogg'},
+    {mime:'audio/wav',filename:'voz.wav',body:Buffer.from('RIFFxxxxWAVE'),kind:'audio'},
+    {mime:'audio/mpeg',filename:'voz.mp3',body:Buffer.from('ID3\\x04\\x00'),kind:'audio'},
+    {mime:'audio/mp4',filename:'voz.m4a',body:Buffer.from('0000ftypM4A '),kind:'audio'},
+  ];
+  const s=await startServer();
+  try{
+    for(const item of cases){
+      const response=await binaryRequest(s.baseUrl,item.body,{mime:item.mime,filename:item.filename,headers:{'X-FisioZap-Organization-Id':financeOrg}});
+      assert.equal(response.status,200,item.mime);
+      const body=await response.json();
+      assert.equal(body.mode,'attachment_receipt');
+      assert.equal(body.message,'Arquivo/Áudio recebido nesta sessão. Nenhuma transcrição ou análise foi realizada.');
+      assert.deepEqual({...body.attachment,id:'replaced'},{
+        id:'replaced',name:item.filename,size:item.body.length,mime:item.normalizedMime??item.mime.split(';')[0],kind:item.kind,
+      });
+      assert.equal(Object.hasOwn(body.attachment,'url'),false);
+    }
+    assert.equal(s.database.calls.length,cases.length);
+    assert.ok(s.database.calls.every(table=>table==='organization_members'));
+  }finally{await s.close()}
+});
+test('chat attachment endpoint rejects unsupported, ambiguous, empty, and mismatched content safely',async()=>{
+  const s=await startServer();
+  try{
+    const rejected=[
+      {body:Buffer.from('%PDF-'),mime:'text/plain',status:415},
+      {body:Buffer.from('%PDF-'),mime:'application/json',status:415},
+      {body:Buffer.from('%PDF-'),mime:'image/png; charset=utf-8',status:415},
+      {body:Buffer.from('%PDF-'),mime:'audio/webm;codecs=opus;charset=utf-8',status:415},
+      {body:Buffer.alloc(0),mime:'application/pdf',status:400},
+      {body:Buffer.from('%PDF'),mime:'application/pdf',status:422},
+      {body:Buffer.from('%PDF-1.7'),mime:'image/png',status:422},
+      {body:Buffer.from('%PDF-1.7'),mime:'application/pdf',filename:'document.html',status:422},
+      {body:Buffer.from('%PDF-1.7'),mime:'application/pdf',filename:'document.exe',status:422},
+    ];
+    for(const item of rejected){
+      const response=await binaryRequest(s.baseUrl,item.body,{mime:item.mime,filename:item.filename});
+      assert.equal(response.status,item.status,item.mime);
+      const body=await response.json();
+      assert.equal(body.attachment,undefined);
+      assert.doesNotMatch(JSON.stringify(body),/%PDF|document\.pdf/i);
+    }
+    assert.ok(s.database.calls.every(table=>table==='organization_members'));
+  }finally{await s.close()}
+});
+test('chat attachment endpoint rejects unsafe encoded filenames and compressed content',async()=>{
+  const s=await startServer();
+  try{
+    const invalidNames=[
+      {value:'%2Fetc%2Fpasswd',status:422},
+      {value:'%5C..%5Cprivate.pdf',status:422},
+      {value:'bad%0Aname.pdf',status:422},
+      {value:'%zz',status:422},
+      {value:encodeURIComponent('a'.repeat(117)+'.pdf'),status:422},
+    ];
+    for(const item of invalidNames){
+      const response=await binaryRequest(s.baseUrl,Buffer.from('%PDF-1.7'),{headers:{'X-FisioZap-File-Name':item.value}});
+      assert.equal(response.status,item.status);
+      const body=await response.json();
+      assert.deepEqual(body,{error:'Nome de arquivo inválido.'});
+      assert.doesNotMatch(JSON.stringify(body),/passwd|private|bad/i);
+    }
+    const compressed=await binaryRequest(s.baseUrl,Buffer.from('%PDF-1.7'),{headers:{'Content-Encoding':'gzip'}});
+    assert.equal(compressed.status,415);
+    assert.deepEqual(await compressed.json(),{error:'Codificação do arquivo não aceita.'});
+  }finally{await s.close()}
+});
+
+const transcriptionConfig={enabled:true,apiKey:'server-test-secret',model:'gpt-4o-mini-transcribe'};
+const validAudio=Buffer.from([0x1a,0x45,0xdf,0xa3,0x00,0x01]);
+const consentHeaders={'X-Transcription-Consent':'true'};
+
+test('transcription configuration defaults off and accepts only a server key and allowlisted model',()=>{
+  assert.deepEqual(getTranscriptionConfig({}),{enabled:false,apiKey:'',model:'gpt-4o-mini-transcribe'});
+  assert.equal(getTranscriptionConfig({FISIOZAP_TRANSCRIPTION_ENABLED:'true',OPENAI_API_KEY:'  '}).enabled,false);
+  assert.equal(getTranscriptionConfig({FISIOZAP_TRANSCRIPTION_ENABLED:'1',OPENAI_API_KEY:'server-key'}).enabled,false);
+  assert.equal(getTranscriptionConfig({FISIOZAP_TRANSCRIPTION_ENABLED:'true',OPENAI_API_KEY:'server-key',FISIOZAP_TRANSCRIPTION_MODEL:'unknown'}).enabled,false);
+  assert.equal(getTranscriptionConfig({FISIOZAP_TRANSCRIPTION_ENABLED:'true',OPENAI_API_KEY:'server-key'}).enabled,true);
+});
+
+test('OpenAI adapter builds a multipart request through an injected mock only',async()=>{
+  let captured;
+  const fakeFetch=async(url,options)=>{
+    captured={url,options};
+    return new Response(JSON.stringify({text:'fala reconhecida'}),{status:200,headers:{'Content-Type':'application/json'}});
+  };
+  const text=await transcribeWithOpenAI({
+    bytes:validAudio,mime:'audio/webm',filename:'audio.webm',apiKey:'server-key',model:'gpt-4o-mini-transcribe',fetchImpl:fakeFetch,
+  });
+  assert.equal(text,'fala reconhecida');
+  assert.equal(captured.url,'https://api.openai.com/v1/audio/transcriptions');
+  assert.equal(captured.options.method,'POST');
+  assert.equal(captured.options.headers.Authorization,'Bearer server-key');
+  assert.equal(captured.options.body.get('model'),'gpt-4o-mini-transcribe');
+  assert.equal(captured.options.body.get('response_format'),'json');
+  assert.equal(captured.options.body.get('file').name,'audio.webm');
+  assert.ok(captured.options.signal instanceof AbortSignal);
+});
+
+test('transcription status is authenticated, membership-scoped, and never reveals secrets',async()=>{
+  const denied=await startServer({memberships:[]},null,undefined,{transcriptionConfig:()=>transcriptionConfig});
+  const enabled=await startServer({},null,undefined,{transcriptionConfig:()=>transcriptionConfig});
+  const disabled=await startServer({},null,undefined,{transcriptionConfig:()=>({enabled:false,apiKey:'secret',model:null})});
+  try{
+    assert.equal((await request(enabled.baseUrl,'/chat/transcription-status')).status,401);
+    assert.equal((await request(denied.baseUrl,'/chat/transcription-status',{headers:{Authorization:'Bearer valid'}})).status,403);
+    const response=await request(enabled.baseUrl,'/chat/transcription-status',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    assert.deepEqual(await response.json(),{enabled:true});
+    const disabledResponse=await request(disabled.baseUrl,'/chat/transcription-status',{headers:{Authorization:'Bearer valid'}});
+    assert.deepEqual(await disabledResponse.json(),{enabled:false});
+    assert.ok([...enabled.database.calls,...denied.database.calls].every(table=>table==='organization_members'));
+  }finally{await denied.close();await enabled.close();await disabled.close()}
+});
+
+test('transcription requires authenticated organization membership and explicit consent before provider use',async()=>{
+  let providerCalls=0;
+  const provider=async()=>{providerCalls+=1;return 'transcrição de teste'};
+  const signedOut=await startServer({},null,undefined,{transcriptionProvider:provider,transcriptionConfig:()=>transcriptionConfig});
+  const noMembership=await startServer({memberships:[]},null,undefined,{transcriptionProvider:provider,transcriptionConfig:()=>transcriptionConfig});
+  const s=await startServer({},null,undefined,{transcriptionProvider:provider,transcriptionConfig:()=>transcriptionConfig});
+  try{
+    const unauth=await binaryRequest(signedOut.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:{Authorization:''}});
+    assert.equal(unauth.status,401);
+    assert.deepEqual(signedOut.database.calls,[]);
+    const denied=await binaryRequest(noMembership.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders});
+    assert.equal(denied.status,403);
+    assert.deepEqual(noMembership.database.calls,['organization_members']);
+    const noConsent=await binaryRequest(s.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm'});
+    assert.equal(noConsent.status,422);
+    assert.equal(providerCalls,0);
+  }finally{await signedOut.close();await noMembership.close();await s.close()}
+});
+
+test('valid audio is transcribed only after signature validation and returns text without filename metadata',async()=>{
+  const calls=[];
+  const provider=async input=>{calls.push(input);return 'texto reconhecido'};
+  const s=await startServer({},null,undefined,{transcriptionProvider:provider,transcriptionConfig:()=>transcriptionConfig});
+  try{
+    const response=await binaryRequest(s.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm;codecs=opus',filename:'paciente particular.webm',headers:consentHeaders});
+    assert.equal(response.status,200);
+    assert.deepEqual(await response.json(),{text:'texto reconhecido',mode:'transcription'});
+    assert.equal(calls.length,1);
+    assert.equal(calls[0].mime,'audio/webm');
+    assert.equal(calls[0].filename,'audio.webm');
+    assert.equal(calls[0].apiKey,transcriptionConfig.apiKey);
+    assert.equal(calls[0].model,transcriptionConfig.model);
+    assert.ok(s.database.calls.every(table=>table==='organization_members'));
+  }finally{await s.close()}
+});
+
+test('disconnect after upload aborts the pending provider request without releasing its slot early',async()=>{
+  let providerSignal;
+  let signalReady;
+  const started=new Promise(resolve=>{signalReady=resolve});
+  const provider=({signal})=>new Promise((resolve,reject)=>{
+    providerSignal=signal;
+    signalReady();
+    signal.addEventListener('abort',()=>reject(new Error('aborted')), {once:true});
+  });
+  const s=await startServer({},null,undefined,{transcriptionProvider:provider,transcriptionConfig:()=>transcriptionConfig});
+  const controller=new AbortController();
+  try{
+    const pending=binaryRequest(s.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders,signal:controller.signal});
+    await started;
+    controller.abort();
+    await assert.rejects(pending);
+    for(let attempt=0;attempt<20&&!providerSignal?.aborted;attempt++) await new Promise(resolve=>setTimeout(resolve,5));
+    assert.equal(providerSignal.aborted,true);
+  }finally{await s.close()}
+});
+
+test('transcription quota is three valid attempts per user and organization per rolling minute',async()=>{
+  let clock=10_000;
+  let providerCalls=0;
+  const orgA='22222222-2222-4222-8222-222222222222';
+  const orgB='44444444-4444-4444-8444-444444444444';
+  const s=await startServer({memberships:[{organization_id:orgA,role:'professional'},{organization_id:orgB,role:'professional'}]},null,undefined,{
+    transcriptionProvider:async()=>{providerCalls+=1;return 'ok'},
+    transcriptionConfig:()=>transcriptionConfig,
+    transcriptionNow:()=>clock,
+  });
+  const send=org=>binaryRequest(s.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:{...consentHeaders,'X-FisioZap-Organization-Id':org}});
+  try{
+    for(let i=0;i<3;i++) assert.equal((await send(orgA)).status,200);
+    assert.equal((await send(orgA)).status,429);
+    assert.equal((await send(orgB)).status,200);
+    clock+=60_000;
+    assert.equal((await send(orgA)).status,200);
+    assert.equal(providerCalls,5);
+  }finally{await s.close()}
+});
+
+test('transcription rejects images, bad extensions/signatures, empty, oversized and compressed bodies without provider calls',async()=>{
+  let providerCalls=0;
+  const provider=async()=>{providerCalls+=1;return 'should not run'};
+  const s=await startServer({},null,undefined,{transcriptionProvider:provider,transcriptionConfig:()=>transcriptionConfig});
+  try{
+    const cases=[
+      {body:Buffer.from('%PDF-1.7'),mime:'application/pdf',filename:'document.pdf',status:415},
+      {body:Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),mime:'image/png',filename:'photo.png',status:415},
+      {body:validAudio,mime:'audio/webm',filename:'voz.html',status:422},
+      {body:Buffer.from('not audio'),mime:'audio/webm',filename:'voz.webm',status:422},
+      {body:Buffer.alloc(0),mime:'audio/webm',filename:'voz.webm',status:400},
+    ];
+    for(const item of cases){
+      const response=await binaryRequest(s.baseUrl,item.body,{path:'/chat/transcriptions',mime:item.mime,filename:item.filename,headers:consentHeaders});
+      assert.equal(response.status,item.status);
+    }
+    const oversized=await binaryRequest(s.baseUrl,Buffer.alloc(10*1024*1024+1,0),{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders});
+    assert.equal(oversized.status,413);
+    const compressed=await binaryRequest(s.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:{...consentHeaders,'Content-Encoding':'gzip'}});
+    assert.equal(compressed.status,415);
+    for(let i=0;i<3;i++) assert.equal((await binaryRequest(s.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders})).status,200);
+    assert.equal(providerCalls,3);
+  }finally{await s.close()}
+});
+
+test('disabled transcription returns 503 and provider errors or unsafe output return a safe error',async()=>{
+  let providerCalls=0;
+  const disabled=await startServer({},null,undefined,{transcriptionProvider:async()=>{providerCalls+=1;return 'x'},transcriptionConfig:()=>({enabled:false})});
+  const failure=await startServer({},null,undefined,{transcriptionProvider:async()=>{providerCalls+=1;throw new Error('secret provider details')},transcriptionConfig:()=>transcriptionConfig});
+  const unsafe=await startServer({},null,undefined,{transcriptionProvider:async()=>{providerCalls+=1;return 'x'.repeat(20_001)},transcriptionConfig:()=>transcriptionConfig});
+  try{
+    const disabledResponse=await binaryRequest(disabled.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders});
+    assert.equal(disabledResponse.status,503);
+    const failed=await binaryRequest(failure.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders});
+    assert.equal(failed.status,502);
+    assert.doesNotMatch(await failed.text(),/secret provider details/);
+    const tooLong=await binaryRequest(unsafe.baseUrl,validAudio,{path:'/chat/transcriptions',mime:'audio/webm',filename:'voz.webm',headers:consentHeaders});
+    assert.equal(tooLong.status,502);
+    assert.equal(providerCalls,2);
+  }finally{await disabled.close();await failure.close();await unsafe.close()}
+});
+
+test('transcription raw routes bypass JSON parsing before auth, including aliases',async()=>{
+  const s=await startServer();
+  try{
+    for(const path of ['/chat/transcriptions/','/CHAT/TRANSCRIPTIONS']){
+      const response=await binaryRequest(s.baseUrl,Buffer.alloc(70*1024),{path,mime:'application/json',headers:{Authorization:''}});
+      assert.equal(response.status,401,path);
+    }
+    assert.deepEqual(s.database.calls,[]);
+  }finally{await s.close()}
+});
+test('chat attachment endpoint caps binary bodies at 10 MiB',async()=>{
+  const s=await startServer();
+  try{
+    const atLimit=Buffer.alloc(10*1024*1024);
+    atLimit.write('%PDF-1.7');
+    const accepted=await binaryRequest(s.baseUrl,atLimit);
+    assert.equal(accepted.status,200);
+    assert.equal((await accepted.json()).attachment.size,10*1024*1024);
+    const tooLarge=Buffer.alloc(10*1024*1024+1);
+    tooLarge.write('%PDF-1.7');
+    const response=await binaryRequest(s.baseUrl,tooLarge);
+    assert.equal(response.status,413);
+    assert.deepEqual(await response.json(),{error:'Arquivo excede o limite de 10 MiB.'});
+    assert.deepEqual(s.database.calls,['organization_members','organization_members']);
+  }finally{await s.close()}
+});
+test('chat rejects authenticated users without membership before reading operational data',async()=>{
+  const s=await startServer({memberships:[]});
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{Authorization:'Bearer valid'},body:{message:'Agenda de hoje'}});
+    assert.equal(response.status,403);
+    assert.deepEqual(s.database.calls,['organization_members']);
+  }finally{await s.close()}
+});
+test('chat returns a read-only local-day summary scoped to the current professional',async()=>{
+  const ownMorning={id:'80000000-0000-4000-8000-000000000001',organization_id:financeOrg,professional_id:financeUser,patient_id:'90000000-0000-4000-8000-000000000001',starts_at:'2026-10-10T12:00:00.000Z',status:'confirmed',notes:'Dado clínico privado'};
+  const ownAfternoon={id:'80000000-0000-4000-8000-000000000002',organization_id:financeOrg,professional_id:financeUser,patient_id:'90000000-0000-4000-8000-000000000002',starts_at:'2026-10-10T17:30:00.000Z',status:'scheduled',notes:'Outro dado clínico'};
+  const peer={...ownMorning,id:'80000000-0000-4000-8000-000000000003',professional_id:financePeer,starts_at:'2026-10-10T13:00:00.000Z'};
+  const foreign={...ownMorning,id:'80000000-0000-4000-8000-000000000004',organization_id:financeForeignOrg,starts_at:'2026-10-10T14:00:00.000Z'};
+  const cancelled={...ownMorning,id:'80000000-0000-4000-8000-000000000005',status:'cancelled',starts_at:'2026-10-10T15:00:00.000Z'};
+  const atEndBoundary={...ownMorning,id:'80000000-0000-4000-8000-000000000006',starts_at:'2026-10-11T03:00:00.000Z'};
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'},appointments:[ownMorning,ownAfternoon,peer,foreign,cancelled,atEndBoundary]},null,()=>new Date('2026-10-10T15:00:00.000Z'));
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{
+      message:'O que tenho hoje?',timezone:'America/Sao_Paulo',today_range:{from:'2026-10-10T03:00:00.000Z',to:'2026-10-11T03:00:00.000Z'},
+    }});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.mode,'read_only');
+    assert.equal(body.intent,'agenda_today');
+    assert.equal(body.message,'Você tem 2 atendimentos previstos para hoje. Às 09:00, 14:30.');
+    assert.doesNotMatch(body.message,/80000000|90000000|privado|paciente/i);
+    assert.deepEqual(s.database.calls,['organization_members','appointments']);
+  }finally{await s.close()}
+});
+test('chat counts only the current user’s open manual tasks without returning their content',async()=>{
+  const notifications=[
+    {id:'81000000-0000-4000-8000-000000000001',organization_id:financeOrg,user_id:financeUser,action_type:'manual_task',status:'unread',title:'Paciente Ana',message:'Conteúdo clínico privado'},
+    {id:'81000000-0000-4000-8000-000000000002',organization_id:financeOrg,user_id:financeUser,action_type:'manual_task',status:'read',title:'Retorno',message:'Detalhe privado'},
+    {id:'81000000-0000-4000-8000-000000000003',organization_id:financeOrg,user_id:financeUser,action_type:'manual_task',status:'completed'},
+    {id:'81000000-0000-4000-8000-000000000004',organization_id:financeOrg,user_id:financePeer,action_type:'manual_task',status:'unread'},
+    {id:'81000000-0000-4000-8000-000000000005',organization_id:financeForeignOrg,user_id:financeUser,action_type:'manual_task',status:'unread'},
+    {id:'81000000-0000-4000-8000-000000000006',organization_id:financeOrg,user_id:financeUser,action_type:'clinical_alert',status:'unread'},
+  ];
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'},notifications});
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{message:'Quais são minhas pendências?'}});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.mode,'read_only');
+    assert.equal(body.intent,'own_pending_tasks');
+    assert.equal(body.message,'Você tem 2 pendências próprias em aberto.');
+    assert.doesNotMatch(body.message,/81000000|Ana|clínico|privado/i);
+    assert.deepEqual(s.database.calls,['organization_members','notifications']);
+  }finally{await s.close()}
+});
+test('chat rejects an invalid local-day range and does not query the agenda',async()=>{
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'}},null,()=>new Date('2026-10-10T15:00:00.000Z'));
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{
+      message:'Agenda de hoje',timezone:'America/Sao_Paulo',today_range:{from:'2026-10-10T03:00:00.000Z',to:'2026-10-12T03:00:00.000Z'},
+    }});
+    assert.equal(response.status,422);
+    assert.deepEqual(s.database.calls,['organization_members']);
+  }finally{await s.close()}
+});
+test('chat accepts 23-hour, 24-hour, and 25-hour local days across DST changes',async()=>{
+  const cases=[
+    {range:{from:'2025-03-09T05:00:00.000Z',to:'2025-03-10T04:00:00.000Z'},now:'2025-03-09T16:00:00.000Z'},
+    {range:{from:'2025-03-08T05:00:00.000Z',to:'2025-03-09T05:00:00.000Z'},now:'2025-03-08T17:00:00.000Z'},
+    {range:{from:'2025-11-02T04:00:00.000Z',to:'2025-11-03T05:00:00.000Z'},now:'2025-11-02T17:00:00.000Z'},
+  ];
+  for(const {range:today_range,now} of cases){
+    const s=await startServer({membership:{organization_id:financeOrg,role:'professional'}},null,()=>new Date(now));
+    try{
+      const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{
+        message:'Agenda de hoje',timezone:'America/New_York',today_range,
+      }});
+      assert.equal(response.status,200);
+      assert.equal((await response.json()).message,'Você não tem atendimentos previstos para hoje.');
+    }finally{await s.close()}
+  }
+});
+test('chat rejects an invalid timezone',async()=>{
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'}},null,()=>new Date('2026-10-10T15:00:00.000Z'));
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{
+      message:'Agenda de hoje',timezone:'Mars/Olympus',today_range:{from:'2026-10-10T03:00:00.000Z',to:'2026-10-11T03:00:00.000Z'},
+    }});
+    assert.equal(response.status,422);
+    assert.deepEqual(s.database.calls,['organization_members']);
+  }finally{await s.close()}
+});
+test('chat rejects valid local-day ranges in the past or future',async()=>{
+  const ranges=[
+    {from:'2026-10-09T03:00:00.000Z',to:'2026-10-10T03:00:00.000Z'},
+    {from:'2026-10-11T03:00:00.000Z',to:'2026-10-12T03:00:00.000Z'},
+  ];
+  for(const today_range of ranges){
+    const s=await startServer({membership:{organization_id:financeOrg,role:'professional'}},null,()=>new Date('2026-10-10T15:00:00.000Z'));
+    try{
+      const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{
+        message:'Agenda de hoje',timezone:'America/Sao_Paulo',today_range,
+      }});
+      assert.equal(response.status,422);
+      assert.deepEqual(s.database.calls,['organization_members']);
+    }finally{await s.close()}
+  }
+});
+test('chat returns the empty agenda message and excludes the exclusive end boundary',async()=>{
+  const boundaryOnly={id:'80000000-0000-4000-8000-000000000007',organization_id:financeOrg,professional_id:financeUser,starts_at:'2026-10-11T03:00:00.000Z',status:'confirmed'};
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'},appointments:[boundaryOnly]},null,()=>new Date('2026-10-10T15:00:00.000Z'));
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{
+      message:'Agenda de hoje',timezone:'America/Sao_Paulo',today_range:{from:'2026-10-10T03:00:00.000Z',to:'2026-10-11T03:00:00.000Z'},
+    }});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.message,'Você não tem atendimentos previstos para hoje.');
+    assert.equal(body.mode,'read_only');
+    assert.equal(body.intent,'agenda_today');
+    assert.deepEqual(s.database.calls,['organization_members','appointments']);
+  }finally{await s.close()}
+});
+test('chat returns the exact empty own-task message without reading other tables',async()=>{
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'}});
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{message:'Quais são minhas pendências?'}});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.message,'Você não tem pendências próprias em aberto.');
+    assert.equal(body.mode,'read_only');
+    assert.equal(body.intent,'own_pending_tasks');
+    assert.deepEqual(s.database.calls,['organization_members','notifications']);
+  }finally{await s.close()}
+});
+test('chat refuses unsupported clinical requests without reading clinical tables',async()=>{
+  const s=await startServer({membership:{organization_id:financeOrg,role:'professional'},patients:[{id:'90000000-0000-4000-8000-000000000001',full_name:'Paciente Fictício'}]});
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{message:'Mostre a evolução do paciente Ana'}});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.mode,'read_only');
+    assert.equal(body.intent,'unsupported');
+    assert.doesNotMatch(body.message,/Ana|Paciente Fictício|evolução clínica/i);
+    assert.deepEqual(s.database.calls,['organization_members']);
+  }finally{await s.close()}
+});
+test('chat summarizes exact cents for a month with professional and exclusive-date scoping',async()=>{
+  const rows=[
+    financialEntry('82000000-0000-4000-8000-000000000001',{amount:'120.35',paid_at:'2027-01-02T10:00:00Z'}),
+    financialEntry('82000000-0000-4000-8000-000000000002',{amount:'10.05'}),
+    financialEntry('82000000-0000-4000-8000-000000000003',{kind:'expense',entry_type:'expense',amount:'30.10',paid_at:'2027-01-03T10:00:00Z'}),
+    financialEntry('82000000-0000-4000-8000-000000000004',{kind:'expense',entry_type:'expense',amount:'5.99'}),
+    financialEntry('82000000-0000-4000-8000-000000000005',{occurred_at:'2026-11-30',amount:'80.00'}),
+    financialEntry('82000000-0000-4000-8000-000000000006',{occurred_at:'2027-01-01',amount:'90.00'}),
+    financialEntry('82000000-0000-4000-8000-000000000007',{professional_id:financePeer,amount:'70.00'}),
+    financialEntry('82000000-0000-4000-8000-000000000008',{organization_id:financeForeignOrg,amount:'60.00'}),
+  ];
+  const s=await startServer({financialEntries:rows});
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:{...financeHeaders,'X-FisioZap-Organization-Id':financeOrg},body:{message:'Resumo financeiro deste mês',month:'2026-12'}});
+    assert.equal(response.status,200);
+    assert.deepEqual(await response.json(),{
+      message:'Resumo financeiro de dezembro de 2026 (seus lançamentos): receitas pagas R$ 120,35, receitas pendentes R$ 10,05, despesas pagas R$ 30,10, despesas pendentes R$ 5,99. Saldo realizado: R$ 90,25.',
+      mode:'read_only',intent:'financial_summary',
     });
-  });
-}
+    assert.deepEqual(s.database.calls,['organization_members','financial_entries']);
+    const query=s.database.queries.find(item=>item.table==='financial_entries');
+    assert.equal(query.columns,'kind,entry_type,amount,paid_at');
+    assert.deepEqual(query.selectOptions,{count:'exact'});
+    assert.equal(query.limit,1000);
+    assert.deepEqual(query.filters,[['organization_id',financeOrg,'eq'],['occurred_at','2026-12-01','gte'],['occurred_at','2027-01-01','lt'],['professional_id',financeUser,'eq']]);
+  }finally{await s.close()}
+});
+test('chat financial summary scopes managers to the active organization and denies unknown roles',async()=>{
+  const rows=[financialEntry('83000000-0000-4000-8000-000000000001'),financialEntry('83000000-0000-4000-8000-000000000002',{professional_id:financePeer})];
+  const manager=await startServer({membership:{organization_id:financeOrg,role:'administrative'},financialEntries:rows});
+  const unknown=await startServer({membership:{organization_id:financeOrg,role:'assistant'},financialEntries:rows});
+  try{
+    const response=await request(manager.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Como está meu financeiro?',month:'2026-12'}});
+    assert.equal(response.status,200);
+    assert.match((await response.json()).message,/\(da organização ativa\)/);
+    const query=manager.database.queries.find(item=>item.table==='financial_entries');
+    assert.deepEqual(query.filters,[['organization_id',financeOrg,'eq'],['occurred_at','2026-12-01','gte'],['occurred_at','2027-01-01','lt']]);
+    const denied=await request(unknown.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(denied.status,403);
+    assert.deepEqual(unknown.database.calls,['organization_members']);
+  }finally{await manager.close();await unknown.close()}
+});
+test('chat rejects invalid financial months before querying financial data',async()=>{
+  for(const month of ['2026-13','2026-02-30','2026-00',null]){
+    const s=await startServer();
+    try{
+      const response=await request(s.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',...(month===null?{}:{month})}});
+      assert.equal(response.status,422);
+      assert.deepEqual(s.database.calls,['organization_members']);
+    }finally{await s.close()}
+  }
+});
+test('chat financial summary handles empty months and safe query errors',async()=>{
+  const empty=await startServer();
+  const failed=await startServer({operationErrors:{financial_entries:{select:new Error('database secret')}}});
+  try{
+    const response=await request(empty.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro do mês atual',month:'2027-01'}});
+    assert.equal(response.status,200);
+    assert.match((await response.json()).message,/receitas pagas R\$ 0,00.*Saldo realizado: R\$ 0,00/);
+    const error=await request(failed.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(error.status,400);
+    assert.deepEqual(await error.json(),{error:'Não foi possível consultar o resumo financeiro.'});
+  }finally{await empty.close();await failed.close()}
+});
+test('chat financial summary rejects corrupt amounts and unexpected kinds',async()=>{
+  const corruptAmounts=[-1,0,'0',1.001,'1.001','NaN',null];
+  for(const amount of corruptAmounts){
+    const s=await startServer({financialEntries:[financialEntry('85500000-0000-4000-8000-000000000001',{amount})]});
+    try{
+      const response=await request(s.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+      assert.equal(response.status,500,String(amount));
+      assert.deepEqual(await response.json(),{error:'Não foi possível totalizar os lançamentos com segurança.'});
+    }finally{await s.close()}
+  }
+  for(const kind of ['constructor','invalid']){
+    const s=await startServer({financialEntries:[financialEntry('85600000-0000-4000-8000-000000000001',{kind,entry_type:kind})]});
+    try{
+      const response=await request(s.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+      assert.equal(response.status,500,kind);
+      assert.deepEqual(await response.json(),{error:'Não foi possível totalizar os lançamentos com segurança.'});
+    }finally{await s.close()}
+  }
+});
+test('chat financial summary adds numeric values in cents and formats a negative realized balance',async()=>{
+  const rows=[
+    financialEntry('85700000-0000-4000-8000-000000000001',{amount:0.1,paid_at:'2026-12-02T10:00:00Z'}),
+    financialEntry('85700000-0000-4000-8000-000000000002',{amount:0.2,paid_at:'2026-12-03T10:00:00Z'}),
+    financialEntry('85700000-0000-4000-8000-000000000003',{kind:'expense',entry_type:'expense',amount:0.5,paid_at:'2026-12-04T10:00:00Z'}),
+  ];
+  const s=await startServer({financialEntries:rows});
+  try{
+    const response=await request(s.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(response.status,200);
+    assert.equal((await response.json()).message,'Resumo financeiro de dezembro de 2026 (seus lançamentos): receitas pagas R$ 0,30, receitas pendentes R$ 0,00, despesas pagas R$ 0,50, despesas pendentes R$ 0,00. Saldo realizado: -R$ 0,20.');
+  }finally{await s.close()}
+});
+test('chat refuses capped summaries and unsafe amounts, and ignores financial mutations or clinical requests',async()=>{
+  const tooMany=await startServer({financialEntries:Array.from({length:1000},(_,index)=>financialEntry('84000000-0000-4000-8000-'+String(index).padStart(12,'0')))});
+  const invalidAmount=await startServer({financialEntries:[financialEntry('85000000-0000-4000-8000-000000000001',{amount:'999999999999.99'})]});
+  const hiddenRows=await startServer({financialEntries:[financialEntry('84500000-0000-4000-8000-000000000001')],selectCountOverrides:{financial_entries:2}});
+  const missingCount=await startServer({selectCountOverrides:{financial_entries:null}});
+  const unsupported=await startServer();
+  try{
+    const truncated=await request(tooMany.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(truncated.status,413);
+    assert.match((await truncated.json()).error,/muitos lançamentos.*módulo financeiro/i);
+    const mismatch=await request(hiddenRows.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(mismatch.status,413);
+    const unknownCount=await request(missingCount.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(unknownCount.status,400);
+    const unsafe=await request(invalidAmount.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message:'Resumo financeiro',month:'2026-12'}});
+    assert.equal(unsafe.status,500);
+    assert.deepEqual(await unsafe.json(),{error:'Não foi possível totalizar os lançamentos com segurança.'});
+    for(const message of ['Registre uma despesa de 30 reais','Mostre o financeiro do paciente Ana']){
+      const callsBefore=unsupported.database.calls.length;
+      const response=await request(unsupported.baseUrl,'/chat',{method:'POST',headers:financeHeaders,body:{message,month:'2026-12'}});
+      assert.equal(response.status,200);
+      assert.equal((await response.json()).intent,'unsupported');
+      assert.deepEqual(unsupported.database.calls.slice(callsBefore),['organization_members']);
+    }
+  }finally{await tooMany.close();await invalidAmount.close();await hiddenRows.close();await missingCount.close();await unsupported.close()}
+});
+test('patients require authentication',async()=>{const s=await startServer();assert.equal((await request(s.baseUrl,'/patients')).status,401);await s.close()});
+test('patient creation validates name',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/patients',{method:'POST',headers:{Authorization:'Bearer valid'},body:{full_name:'A'}});assert.equal(r.status,422);await s.close()});
+test('patient creation derives organization and professional from authenticated membership',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/patients',{method:'POST',headers:{Authorization:'Bearer valid'},body:{full_name:'Paciente Fictício'}});assert.equal(r.status,201);const body=await r.json();assert.equal(body.patient.organization_id,'22222222-2222-4222-8222-222222222222');assert.equal(body.patient.professional_id,'11111111-1111-4111-8111-111111111111');await s.close()});
+test('patient listing is organization scoped by the RLS-backed client',async()=>{const patients=[{id:'33333333-3333-4333-8333-333333333333',full_name:'Paciente Fictício',status:'active'}];const s=await startServer({patients});const r=await request(s.baseUrl,'/patients',{headers:{Authorization:'Bearer valid'}});assert.equal(r.status,200);assert.deepEqual((await r.json()).patients,patients);await s.close()});
+test('patient status can be updated for discharge',async()=>{const patients=[{id:'33333333-3333-4333-8333-333333333333',full_name:'Paciente Fictício',status:'active'}];const s=await startServer({patients});const r=await request(s.baseUrl,'/patients/33333333-3333-4333-8333-333333333333',{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{status:'discharged'}});assert.equal(r.status,200);await s.close()});
 
-async function request(baseUrl, path, options = {}) {
-  return fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers: {
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(options.headers || {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
-}
+test('appointments require authentication',async()=>{const s=await startServer();assert.equal((await request(s.baseUrl,'/appointments')).status,401);await s.close()});
+test('appointment creation validates patient and timezone',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/appointments',{method:'POST',headers:{Authorization:'Bearer valid'},body:{patient_id:'invalid',starts_at:'2026-10-10T09:00:00',ends_at:'2026-10-10T08:00:00Z'}});assert.equal(r.status,422);await s.close()});
+test('appointment update rejects invalid id',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/appointments/not-a-uuid',{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{status:'confirmed'}});assert.equal(r.status,400);await s.close()});
+test('appointment listing rejects invalid status',async()=>{const s=await startServer();const r=await request(s.baseUrl,'/appointments?status=unknown',{headers:{Authorization:'Bearer valid'}});assert.equal(r.status,422);await s.close()});
 
-test('health is public and does not expose secrets', async () => {
-  const server = await startServer();
-  const response = await request(server.baseUrl, '/health');
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { status: 'ok', service: 'fisio-zap-backend' });
-  await server.close();
+test('appointment conflict returns HTTP 409',async()=>{
+  const patientId='33333333-3333-4333-8333-333333333333';
+  const s=await startServer({
+    patients:[{id:patientId,organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111'}],
+    operationErrors:{appointments:{insert:{code:'23P01'}}},
+  });
+  try {
+    const response=await request(s.baseUrl,'/appointments',{method:'POST',headers:{Authorization:'Bearer valid'},body:{
+      patient_id:patientId,starts_at:'2026-10-12T13:00:00Z',ends_at:'2026-10-12T14:00:00Z'
+    }});
+    assert.equal(response.status,409);
+  }finally{await s.close()}
 });
 
-test('chat rejects missing and invalid authentication', async () => {
-  const server = await startServer({ user: { id: 'user-a' } });
-
-  const missing = await request(server.baseUrl, '/chat', {
-    method: 'POST',
-    body: { message: 'olá' },
-  });
-  assert.equal(missing.status, 401);
-
-  const invalid = await request(server.baseUrl, '/chat', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer invalid' },
-    body: { message: 'olá' },
-  });
-  assert.equal(invalid.status, 401);
-
-  await server.close();
+test('notifications require authentication and list only the current user and organization',async()=>{
+  const own={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'11111111-1111-4111-8111-111111111111',action_type:'manual_task',title:'Tarefa própria',status:'unread'};
+  const peer={...own,id:'44444444-4444-4444-8444-444444444444',user_id:'55555555-5555-4555-8555-555555555555',title:'Tarefa alheia'};
+  const foreign={...own,id:'66666666-6666-4666-8666-666666666666',organization_id:'77777777-7777-4777-8777-777777777777',title:'Outra organização'};
+  const s=await startServer({notifications:[own,peer,foreign]});
+  try{
+    assert.equal((await request(s.baseUrl,'/notifications')).status,401);
+    const response=await request(s.baseUrl,'/notifications',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    assert.deepEqual((await response.json()).notifications.map(item=>item.id),[own.id]);
+  }finally{await s.close()}
 });
 
-test('chat validates the message after authentication', async () => {
-  const server = await startServer({ user: { id: 'user-a' } });
-
-  const empty = await request(server.baseUrl, '/chat', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer valid' },
-    body: { message: '' },
-  });
-  assert.equal(empty.status, 400);
-
-  const oversized = await request(server.baseUrl, '/chat', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer valid' },
-    body: { message: 'x'.repeat(4001) },
-  });
-  assert.equal(oversized.status, 422);
-
-  await server.close();
+test('notification routes reject authenticated users without organization membership',async()=>{
+  const s=await startServer({memberships:[]});
+  try{
+    const response=await request(s.baseUrl,'/notifications',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,403);
+  }finally{await s.close()}
 });
 
-test('chat accepts only configured frontend origin for CORS', async () => {
-  const server = await startServer({ user: { id: 'user-a' } });
-
-  const allowed = await request(server.baseUrl, '/health', {
-    headers: { Origin: 'http://localhost:3000' },
-  });
-  assert.equal(allowed.headers.get('access-control-allow-origin'), 'http://localhost:3000');
-
-  const denied = await request(server.baseUrl, '/health', {
-    headers: { Origin: 'https://evil.example' },
-  });
-  assert.equal(denied.headers.get('access-control-allow-origin'), null);
-
-  await server.close();
+test('upcoming appointment reminders require membership and only return the current professional within 24 hours',async()=>{
+  const now=Date.now();
+  const own={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',patient_id:'88888888-8888-4888-8888-888888888888',starts_at:new Date(now+60*60*1000).toISOString(),status:'scheduled',notes:'Conteúdo clínico que não pode sair'};
+  const rows=[
+    own,
+    {...own,id:'44444444-4444-4444-8444-444444444444',starts_at:new Date(now+23*60*60*1000).toISOString(),status:'confirmed'},
+    {...own,id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',starts_at:new Date(now+2*60*60*1000).toISOString(),status:'rescheduled'},
+    {...own,id:'55555555-5555-4555-8555-555555555555',starts_at:new Date(now+25*60*60*1000).toISOString()},
+    {...own,id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',starts_at:new Date(now+24*60*60*1000+60_000).toISOString()},
+    {...own,id:'66666666-6666-4666-8666-666666666666',starts_at:new Date(now-60_000).toISOString()},
+    {...own,id:'77777777-7777-4777-8777-777777777777',professional_id:'55555555-5555-4555-8555-555555555555'},
+    {...own,id:'99999999-9999-4999-8999-999999999999',organization_id:'77777777-7777-4777-8777-777777777777'},
+    {...own,id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',status:'completed'},
+  ];
+  const s=await startServer({appointments:rows});
+  try{
+    assert.equal((await request(s.baseUrl,'/notifications/upcoming-appointments')).status,401);
+    const response=await request(s.baseUrl,'/notifications/upcoming-appointments',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    const {appointments}=await response.json();
+    assert.deepEqual(appointments.map(item=>item.id),[own.id,'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','44444444-4444-4444-8444-444444444444']);
+    assert.deepEqual(Object.keys(appointments[0]).sort(),['id','starts_at','status']);
+    assert.equal(JSON.stringify(appointments).includes('patient_id'),false);
+    assert.equal(JSON.stringify(appointments).includes('Conteúdo clínico'),false);
+  }finally{await s.close()}
 });
 
-test('chat uses the authenticated token identity and returns demo response', async () => {
-  const server = await startServer({ user: { id: 'user-a' } });
+test('upcoming appointment reminders reject a user without organization membership',async()=>{
+  const s=await startServer({memberships:[]});
+  try{
+    assert.equal((await request(s.baseUrl,'/notifications/upcoming-appointments',{headers:{Authorization:'Bearer valid'}})).status,403);
+  }finally{await s.close()}
+});
 
-  const response = await request(server.baseUrl, '/chat', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer valid' },
-    body: { message: 'minha rotina' },
-  });
+test('notification creation derives scope from membership and stores only a bounded due date',async()=>{
+  const s=await startServer();
+  try{
+    const response=await request(s.baseUrl,'/notifications',{method:'POST',headers:{Authorization:'Bearer valid'},body:{
+      title:'  Confirmar horário  ',message:' Lembrete operacional ',priority:'attention',due_at:'2026-10-12T10:30:00-03:00'
+    }});
+    assert.equal(response.status,201);
+    const {notification}=await response.json();
+    assert.equal(notification.organization_id,'22222222-2222-4222-8222-222222222222');
+    assert.equal(notification.user_id,'11111111-1111-4111-8111-111111111111');
+    assert.equal(notification.professional_id,'11111111-1111-4111-8111-111111111111');
+    assert.equal(notification.title,'Confirmar horário');
+    assert.equal(notification.body,'Lembrete operacional');
+    assert.equal(notification.action_type,'manual_task');
+    assert.equal(notification.action_data.due_at,'2026-10-12T13:30:00.000Z');
+    assert.equal(notification.status,'unread');
+  }finally{await s.close()}
+});
 
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    message: 'Demonstração FisioZap: recebi sua mensagem, profissional. A integração de IA ainda não está ativa.',
-    mode: 'demo',
-  });
+test('notification creation rejects client-controlled scope and invalid fields',async()=>{
+  const s=await startServer();
+  try{
+    const spoof=await request(s.baseUrl,'/notifications',{method:'POST',headers:{Authorization:'Bearer valid'},body:{title:'Tarefa',organization_id:'77777777-7777-4777-8777-777777777777'}});
+    assert.equal(spoof.status,422);
+    const invalid=await request(s.baseUrl,'/notifications',{method:'POST',headers:{Authorization:'Bearer valid'},body:{title:'x',priority:'critical',due_at:'2026-10-12T10:30:00'}});
+    assert.equal(invalid.status,422);
+    const impossibleDate=await request(s.baseUrl,'/notifications',{method:'POST',headers:{Authorization:'Bearer valid'},body:{title:'Tarefa válida',due_at:'2026-02-31T10:00:00Z'}});
+    assert.equal(impossibleDate.status,422);
+  }finally{await s.close()}
+});
 
-  await server.close();
+test('notification filters reject unsupported values',async()=>{
+  const s=await startServer();
+  try{
+    const status=await request(s.baseUrl,'/notifications?status=invalid',{headers:{Authorization:'Bearer valid'}});
+    const priority=await request(s.baseUrl,'/notifications?priority=critical',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(status.status,422);
+    assert.equal(priority.status,422);
+  }finally{await s.close()}
+});
+
+test('notification filters return only matching valid status and priority',async()=>{
+  const rows=[
+    {id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'11111111-1111-4111-8111-111111111111',action_type:'manual_task',title:'Urgente aberta',status:'unread',priority:'urgent'},
+    {id:'44444444-4444-4444-8444-444444444444',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'11111111-1111-4111-8111-111111111111',action_type:'manual_task',title:'Informativa concluída',status:'completed',priority:'informational'},
+  ];
+  const s=await startServer({notifications:rows});
+  try{
+    const response=await request(s.baseUrl,'/notifications?status=unread&priority=urgent',{headers:{Authorization:'Bearer valid'}});
+    assert.deepEqual((await response.json()).notifications.map(item=>item.id),[rows[0].id]);
+  }finally{await s.close()}
+});
+
+test('notification task routes do not expose legacy notifications',async()=>{
+  const legacy={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'11111111-1111-4111-8111-111111111111',action_type:'clinical_alert',title:'Aviso legado',status:'unread'};
+  const s=await startServer({notifications:[legacy]});
+  try{
+    const list=await request(s.baseUrl,'/notifications',{headers:{Authorization:'Bearer valid'}});
+    assert.deepEqual((await list.json()).notifications,[]);
+    assert.equal((await request(s.baseUrl,'/notifications/'+legacy.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{status:'read'}})).status,404);
+    assert.equal((await request(s.baseUrl,'/notifications/'+legacy.id,{method:'DELETE',headers:{Authorization:'Bearer valid'}})).status,404);
+  }finally{await s.close()}
+});
+
+test('notification state changes set server timestamps and terminal tasks cannot reopen',async()=>{
+  const task={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'11111111-1111-4111-8111-111111111111',action_type:'manual_task',title:'Tarefa',body:'Tarefa',status:'unread',action_data:{}};
+  const s=await startServer({notifications:[task]});
+  try{
+    const completed=await request(s.baseUrl,'/notifications/'+task.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{status:'completed',organization_id:'77777777-7777-4777-8777-777777777777'}});
+    assert.equal(completed.status,422);
+    const response=await request(s.baseUrl,'/notifications/'+task.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{status:'completed'}});
+    assert.equal(response.status,200);
+    const {notification}=await response.json();
+    assert.equal(notification.status,'completed');
+    assert.ok(Number.isFinite(Date.parse(notification.completed_at)));
+    assert.equal((await request(s.baseUrl,'/notifications/'+task.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{status:'unread'}})).status,409);
+  }finally{await s.close()}
+});
+
+test('notification due date can be changed and cleared without losing other action metadata',async()=>{
+  const task={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'11111111-1111-4111-8111-111111111111',action_type:'manual_task',title:'Tarefa',status:'unread',action_data:{source:'manual'}};
+  const s=await startServer({notifications:[task]});
+  try{
+    const changed=await request(s.baseUrl,'/notifications/'+task.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{due_at:'2026-10-12T10:30:00-03:00'}});
+    assert.equal((await changed.json()).notification.action_data.due_at,'2026-10-12T13:30:00.000Z');
+    const cleared=await request(s.baseUrl,'/notifications/'+task.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{due_at:null}});
+    const notification=(await cleared.json()).notification;
+    assert.equal(Object.hasOwn(notification.action_data,'due_at'),false);
+    assert.equal(notification.action_data.source,'manual');
+  }finally{await s.close()}
+});
+
+test('notification delete is scoped to the authenticated user',async()=>{
+  const other={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',user_id:'55555555-5555-4555-8555-555555555555',action_type:'manual_task',title:'Tarefa de outra pessoa'};
+  const s=await startServer({notifications:[other]});
+  try{
+    assert.equal((await request(s.baseUrl,'/notifications/'+other.id,{method:'DELETE',headers:{Authorization:'Bearer valid'}})).status,404);
+  }finally{await s.close()}
 });

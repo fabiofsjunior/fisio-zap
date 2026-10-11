@@ -1,51 +1,46 @@
-# Preparação do FisioZap para aplicativo móvel
+# S11.1 — FisioZap para Android
 
-## Decisão de arquitetura
+Issue #36. Branch `feature/android-chat-bootstrap` → `TESTES`. Homologação em aparelho real pendente.
 
-- Manter Next.js + React como frontend principal.
-- Manter regras de negócio, autenticação, autorização e acesso aos dados no servidor/Supabase; o aplicativo não terá credenciais privilegiadas embutidas.
-- Quando o fluxo web estiver estável, avaliar o Capacitor para encapsular o frontend existente e gerar builds Android/iOS.
-- Não migrar para React Native nem criar um segundo frontend nesta etapa.
-- Tratar PWA como melhoria de instalação pela web, não como substituta automática do app Capacitor.
+## Canal definido pelo proprietário
 
-## O que esta etapa prepara
+A interação será pelo Chat do próprio aplicativo Android, com experiência semelhante a uma conversa no WhatsApp. Não há conexão com WhatsApp, número vinculado, QR Code ou envio de mensagens externas nesta etapa. A integração externa prevista na S8 fica pendente de reavaliação.
 
-- Viewport móvel e áreas seguras de telas com recortes/notches.
-- Metadados para experiência web instalável e nome do app.
-- Manifesto web básico.
-- Estilos responsivos, campos confortáveis para toque, foco visível e respeito à preferência por movimento reduzido.
-- Requisitos e critérios para a futura integração Capacitor documentados aqui.
+## Arquitetura
 
-## Antes de integrar Capacitor
+O APK usa uma WebView Android para abrir o frontend Next.js existente. Chat, pacientes, agenda, evoluções e financeiro continuam na mesma aplicação web; autenticação, autorização e regras de negócio permanecem no backend/Supabase. Não existe um segundo frontend ou lógica clínica no APK.
 
-1. Validar login, logout, recuperação/expiração de sessão e retorno após login em navegador móvel.
-2. Confirmar que todos os módulos funcionam em larguras pequenas e com teclado virtual aberto.
-3. Publicar frontend e backend em infraestrutura acessível por HTTPS; o app não pode depender do computador local ligado para o uso remoto.
-4. Confirmar CORS, URLs de redirecionamento e políticas de sessão para os domínios usados.
-5. Adicionar Capacitor e seus scripts apenas em uma alteração própria, incluindo lockfile e instruções reproduzíveis para Android/iOS.
-6. Configurar identificadores de pacote, ícones, splash screen e assinatura fora de segredos versionados.
-7. Testar em dispositivos reais: login, sessão renovada, navegação, anexos, câmera (se necessária), notificações push, links externos e comportamento offline.
-8. Manter qualquer cache local de dados clínicos mínimo, protegido e com política de limpeza/logout.
+O documento anterior previa avaliar Capacitor. Para esta entrega foi escolhido um wrapper Kotlin pequeno com controles nativos de navegação e mídia. A base web permanece preservada. Esta escolha não implica migração para React Native nem armazenamento de registros clínicos no aparelho.
 
-## Critérios de aceite para a etapa Capacitor
+## Endereço do aplicativo
 
-- Build web de produção concluído.
-- Build Android de debug reproduzível a partir do repositório.
-- Login e renovação de sessão testados em aparelho real.
-- Nenhuma chave privilegiada presente no bundle web ou APK.
-- Permissões e acesso a pacientes continuam sendo validados no servidor/RLS.
-- Uploads, links de autenticação e notificações documentados e testados.
-- Falhas de rede exibem mensagens úteis sem expor dados clínicos.
-- CI verifica lint/typecheck/build e os arquivos de configuração mobile.
+O aplicativo precisa de endereço HTTPS válido e acessível. O debug permite configurar esse endereço; o release requer endereço fixo na compilação pela propriedade Gradle `WEB_APP_URL`. URLs HTTP, `file:`, `data:` e certificados TLS inválidos não são aceitos. Não desative a validação TLS para testar.
 
-## Fora do escopo atual
+O APK mostra a versão publicada no endereço configurado. Empacotar não publica automaticamente `TESTES`: o site atualmente em `main` pode ter funcionalidades anteriores. Para homologar o Chat recente, use um host HTTPS autorizado. Não ativar Vercel Preview nem promover `main` como atalho. O app não leva servidor ou banco embutido e não funciona como aplicação clínica offline.
 
-- APK/AAB de produção ou publicação em lojas.
-- Service worker/cache offline para dados de pacientes.
-- Notificações push nativas.
-- Acesso a câmera/arquivos sem um caso de uso confirmado.
-- Migração de autenticação ou lógica de negócio para o cliente.
+## Segurança e mídia
 
-## Observação sobre segurança
+- Login e logout usam o fluxo web existente. Não embutir `service_role`, chaves de IA, senhas ou tokens no APK/Gradle.
+- Navegação interna restrita à origem HTTPS configurada. Links externos seguem para o navegador; esquemas arbitrários são bloqueados.
+- Microfone exige origem confiável, solicitação da página e permissão Android. Câmera e permissões amplas de armazenamento não fazem parte desta entrega.
+- Anexos são escolhidos pelo seletor Android. O backend continua responsável por validar tipo, tamanho e autorização.
+- Transcrição S7.4 permanece opcional e desativada por padrão no backend; exige chave própria, opt-in e confirmação antes do envio ao provedor.
+- Depuração WebView somente em debug; backups desativados. Falhas TLS são bloqueadas e erros não exibem conteúdo clínico.
 
-O FisioZap lida com dados potencialmente sensíveis. Nunca confiar no cliente para autorização; não registrar informações clínicas em logs desnecessários; não armazenar tokens/segredos no repositório; e exigir revisão profissional antes de confirmar conteúdo clínico sugerido por IA.
+## Build e APK
+
+O workflow Android executa testes unitários e `assembleDebug`, publicando o APK como artefato do GitHub Actions. Consulte as instruções e versões do SDK/Gradle em `mobile/android/README.md`. Não há assinatura de produção ou publicação em loja nesta etapa.
+
+## Homologação no celular
+
+1. Instale o APK debug do CI Android e configure o endereço HTTPS de homologação.
+2. Faça login com conta de teste. No Chat, confira agenda, pendências e resumo financeiro com dados fictícios, respeitando o perfil.
+3. Grave, pare, ouça e envie áudio fictício. Negue o microfone e confirme erro compreensível sem bloquear o texto.
+4. Selecione áudio, PDF e imagem. Confira limites, cancelamento e preservação do rascunho.
+5. Teste download dos anexos, botão Voltar, teclado, rotação, perda de rede e retorno ao app.
+6. Faça logout: acesso protegido deve exigir login novamente. Teste expiração/renovação da sessão.
+7. Teste link externo e URL inválida: não devem assumir a sessão interna nem receber permissão de microfone.
+
+Testes unitários e build do APK não substituem testes no dispositivo. Push nativo, login Google nativo e cache offline de dados clínicos ficam para entregas posteriores.
+
+A ponte de download aceita mensagens somente da origem HTTPS configurada e do frame principal. O handler web exige clique real, mas a API nativa não comprova gesto do usuário: scripts dessa origem podem solicitar o diálogo. A gravação exige escolha explícita no seletor do Android; não há download automático nem execução do arquivo.

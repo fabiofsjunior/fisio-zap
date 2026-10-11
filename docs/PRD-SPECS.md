@@ -201,7 +201,9 @@ A disponibilidade dos módulos deve respeitar o papel do usuário.
 | Evoluções | ✓ | ✓ | ✓ | — |
 | Exercícios/protocolos | ✓ | ✓ | ✓ | — |
 | Notificações | ✓ | ✓ | ✓ | ✓ |
-| Financeiro | ✓ | ✓ | — | ✓ |
+| Financeiro | ✓ | ✓ | ✓ (próprios lançamentos) | ✓ |
+
+Owner e coordinator acessam o livro-caixa da organização. Administrative também tem acesso financeiro organizacional, sem receber acesso clínico ampliado. Professional consulta apenas os próprios lançamentos.
 
 A autorização real deve ocorrer no servidor/banco. Ocultar botão no frontend nunca é considerado controle de segurança.
 
@@ -597,15 +599,15 @@ O MVP funcional do produto deve priorizar:
 | S1 | Autenticação/base operacional | validada em testes |
 | S1.5 | Segurança, RLS e reconciliação Supabase | em validação |
 | S2 | Pacientes | próxima |
-| S3 | Agenda e rotina | planejada |
-| S4 | Atendimento e evolução | planejada |
-| S5 | Notificações | planejada |
-| S6 | Financeiro | planejada |
-| S7 | Assistente IA | planejada |
-| S8 | WhatsApp | planejada |
+| S3 | Agenda e rotina | integrada em `main`; issue #11 aberta para QA funcional |
+| S4 | Atendimento e evolução | integrada em `TESTES`; issues #13–#16 abertas para QA funcional |
+| S5 | Notificações | integrada em `TESTES`; issues #21 e #23 abertas para QA funcional |
+| S6 | Financeiro | S6.1 integrada em `TESTES`; issue #25 aberta para homologação do proprietário |
+| S7 | Assistente IA | S7.1–S7.3 integradas em `TESTES`; S7.4 adiciona transcrição opcional com consentimento e revisão, issue #34; sem interpretação de documentos; homologação local pendente |
+| S8 | WhatsApp externo | pendente de reavaliação: proprietário escolheu interação pelo Chat do próprio app Android, sem conexão externa nesta entrega |
 | S9 | Documentos/integrações | planejada |
 | S10 | Clínicas/equipes | planejada |
-| S11 | Aplicativo móvel | planejada |
+| S11 | Aplicativo móvel | S11.1 em implementação: APK Android com Chat existente; issue #36 aberta para homologação |
 | S12 | Escala/freemium/produção | planejada |
 
 ### Regra de avanço

@@ -37,6 +37,7 @@ echo.
 echo  BUILD E ACESSO
 echo  [13] Gerar build de producao
 echo  [14] Abrir frontend no navegador
+echo  [15] Testar APK com ngrok - porta 3847
 echo  [0] Sair
 echo.
 set "OP="
@@ -56,6 +57,7 @@ if "%OP%"=="11" goto CHECK
 if "%OP%"=="12" goto HEALTH
 if "%OP%"=="13" goto BUILD
 if "%OP%"=="14" goto OPEN
+if "%OP%"=="15" goto TUNNEL
 if "%OP%"=="0" goto END
 
 echo.
@@ -163,6 +165,27 @@ set "DEV_RC=%ERRORLEVEL%"
 popd
 echo.
 if not "%DEV_RC%"=="0" echo FisioZap encerrado com erro. Codigo: %DEV_RC%
+pause
+goto MENU
+
+:TUNNEL
+cls
+echo FisioZap local + ngrok HTTPS na porta 3847.
+echo Use o link HTTPS exibido no APK. CTRL+C encerra os processos.
+where ngrok >nul 2>nul
+if errorlevel 1 (
+  echo Instale ngrok e configure seu authtoken no computador.
+  pause
+  goto MENU
+)
+if not exist "%ENV_FILE%" (
+  echo Configure .env.local pela opcao 2 primeiro.
+  pause
+  goto MENU
+)
+pushd "%ROOT%"
+call npm run dev:tunnel
+popd
 pause
 goto MENU
 

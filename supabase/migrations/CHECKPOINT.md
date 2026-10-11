@@ -5,7 +5,7 @@
 ## Execução — 06/10/2026 — S1.5
 
 ### Auditoria remota
-- Projeto Supabase real: `fisio-zap` / `myjbyxzxdrvzhqkvsggj`, PostgreSQL 17.
+- Projeto Supabase real: identificador omitido neste documento público, PostgreSQL 17.
 - RLS está habilitado nas tabelas expostas observadas.
 - O remoto possui 14 tabelas de aplicação; existem dados somente em `profiles` (3), `organization_members` (3) e `organizations` (1) na estimativa observada.
 - O histórico remoto contém as versões `20260910011948` e `20260910011957`; os arquivos versionados no Git usavam timestamps diferentes. Isso é **migration-history drift**.
