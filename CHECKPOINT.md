@@ -1,5 +1,10 @@
 # FisioZap — Checkpoint global para agentes
 
+## Sprint S9.3 — 11/10/2026
+- Base remota `TESTES`: merge `f58441b06ff30c04a5cb3b965a51002a011466fe` da PR #43, CI da PR #192 e pós-merge #193 aprovados 4/4. `main` segue `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`.
+- S9.3 em `feature/s9-private-document-files`, issue #44: anexo único privado PDF/JPEG/PNG até 5 MiB, leitura com JWT e gravação validada pelo backend, bucket e policy SELECT por documento; integração real no CI local. Veja `docs/S9-ARQUIVOS-PRIVADOS.md`.
+- As migrations S9 não foram aplicadas ao Supabase remoto. Issues #40, #42 e #44 permanecem abertas até homologação funcional do proprietário em ambiente de teste; não promover para `main`.
+
 ## Sprint S9.2 — 11/10/2026
 - Base remota `TESTES`: merge `90d6a89768d1ad19ce309765982f83a7edd97fb6` da PR #41 (S9.1), CI da PR #190 e pós-merge #191 aprovados 4/4. `main` segue `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`.
 - S9.2 na branch `feature/s9-document-expiry-alerts`, issue #42: consulta somente leitura de vencimentos próprios na central, até 30 dias UTC, sem persistir ou enviar notificações. Veja `docs/S9-AVISOS-VENCIMENTO.md`.

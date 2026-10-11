@@ -26,6 +26,13 @@ const DOCUMENT_ORG_ROLES = new Set(['owner', 'coordinator', 'administrative']);
 const DOCUMENT_TYPES = new Set(['registration', 'certificate', 'license', 'other']);
 const DOCUMENT_STATUSES = new Set(['active', 'archived', 'expired']);
 const PROFESSIONAL_DOCUMENT_FIELDS = 'id,organization_id,professional_id,name,document_type,reference,expires_on,status,created_at,updated_at';
+const PROFESSIONAL_DOCUMENT_FILE_BUCKET = 'professional-documents';
+const MAX_PROFESSIONAL_DOCUMENT_FILE_BYTES = 5 * 1024 * 1024;
+const PROFESSIONAL_DOCUMENT_FILE_MIME_EXTENSIONS = new Map([
+  ['application/pdf', new Set(['pdf'])],
+  ['image/jpeg', new Set(['jpg', 'jpeg'])],
+  ['image/png', new Set(['png'])],
+]);
 
 function isCivilDate(value) {
   if (typeof value !== 'string') return false;
@@ -133,6 +140,10 @@ function isChatTranscriptionPath(path) {
   return /^\/chat\/transcriptions\/?$/i.test(path);
 }
 
+function isProfessionalDocumentFilePath(path) {
+  return /^\/professional-documents\/[^/]+\/file\/?$/i.test(path);
+}
+
 function discardChatAttachmentBody(req) {
   if (Buffer.isBuffer(req.body)) req.body.fill(0);
   req.body = undefined;
@@ -196,7 +207,7 @@ function sanitizeFinancialEntry(entry) {
   };
 }
 
-export function createApp({ supabaseClientFactory = createClient, now = () => new Date(), transcriptionProvider = transcribeWithOpenAI, transcriptionConfig = getTranscriptionConfig, transcriptionNow = () => Date.now() } = {}) {
+export function createApp({ supabaseClientFactory = createClient, storageAdminClientFactory = createClient, now = () => new Date(), transcriptionProvider = transcribeWithOpenAI, transcriptionConfig = getTranscriptionConfig, transcriptionNow = () => Date.now() } = {}) {
   const app = express();
   const rateBuckets = new Map();
   const transcriptionQuotaBuckets = new Map();
@@ -205,7 +216,7 @@ export function createApp({ supabaseClientFactory = createClient, now = () => ne
   const jsonBodyParser = express.json({ limit: '64kb' });
   app.disable('x-powered-by');
   app.use((req, res, next) => {
-    if (req.method === 'POST' && (isChatAttachmentPath(req.path) || isChatTranscriptionPath(req.path))) return next();
+    if (req.method === 'POST' && (isChatAttachmentPath(req.path) || isChatTranscriptionPath(req.path) || isProfessionalDocumentFilePath(req.path))) return next();
     return jsonBodyParser(req, res, next);
   });
 
@@ -380,6 +391,116 @@ export function createApp({ supabaseClientFactory = createClient, now = () => ne
     if (error) return res.status(400).json({ error: 'Não foi possível atualizar o documento profissional.' });
     if (!data) return res.status(404).json({ error: 'Documento profissional não encontrado.' });
     return res.json({ document: sanitizeProfessionalDocument(data, professionalDocumentsToday()) });
+  });
+
+  async function getAccessibleProfessionalDocument(req, res, next) {
+    const membership = await getMembership(req);
+    if (!membership) return rejectMembership(req, res);
+    if (!isUuid(req.params.id)) return res.status(400).json({ error: 'Documento inválido.' });
+    let query = professionalDocumentScope(
+      req.supabase.from('professional_documents').select('id,organization_id,professional_id'),
+      membership,
+      req.user.id,
+    ).eq('id', req.params.id);
+    const { data, error } = await query.maybeSingle();
+    if (error) return res.status(503).json({ error: 'Não foi possível consultar o documento profissional.' });
+    if (!data) return res.status(404).json({ error: 'Documento profissional não encontrado.' });
+    req.professionalDocument = data;
+    return next();
+  }
+
+  app.post('/professional-documents/:id/file', rateLimit, requireAuth, getAccessibleProfessionalDocument,
+    express.raw({ type: () => true, limit: MAX_PROFESSIONAL_DOCUMENT_FILE_BYTES, inflate: false }),
+    async (req, res) => {
+      const bytes = req.body;
+      if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+        if (Buffer.isBuffer(bytes)) bytes.fill(0);
+        return res.status(400).json({ error: 'O arquivo está vazio ou inválido.' });
+      }
+      const contentTypes = rawHeaderValues(req, 'content-type');
+      const encodedNames = rawHeaderValues(req, 'x-fisiozap-file-name');
+      if (contentTypes.length !== 1 || encodedNames.length !== 1) {
+        bytes.fill(0);
+        return res.status(400).json({ error: 'Cabeçalhos do arquivo inválidos.' });
+      }
+      const mime = normalizeAttachmentMime(contentTypes[0]);
+      const allowedExtensions = PROFESSIONAL_DOCUMENT_FILE_MIME_EXTENSIONS.get(mime);
+      if (!allowedExtensions) {
+        bytes.fill(0);
+        return res.status(415).json({ error: 'Tipo de arquivo não aceito.' });
+      }
+      const filename = decodeSafeAttachmentName(encodedNames[0]);
+      if (!filename || !attachmentNameMatchesMime(filename, mime) || !allowedExtensions.has(filename.slice(filename.lastIndexOf('.') + 1).toLowerCase())) {
+        bytes.fill(0);
+        return res.status(422).json({ error: 'O nome do arquivo não corresponde ao tipo informado.' });
+      }
+      if (!matchesAttachmentSignature(mime, bytes)) {
+        bytes.fill(0);
+        return res.status(422).json({ error: 'O conteúdo não corresponde ao tipo de arquivo informado.' });
+      }
+
+      // The key is deliberately derived only from the authorized database row.
+      const path = `${req.professionalDocument.organization_id}/${req.professionalDocument.id}`;
+      const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      if (!serviceRoleKey || !supabaseUrl) {
+        bytes.fill(0);
+        return res.status(503).json({ error: 'O armazenamento privado não está configurado.' });
+      }
+      try {
+        // The service role is created only after authentication, row authorization, and byte validation.
+        const storageAdmin = storageAdminClientFactory(supabaseUrl, serviceRoleKey, {
+          auth: { autoRefreshToken: false, persistSession: false },
+        });
+        const { error } = await storageAdmin.storage.from(PROFESSIONAL_DOCUMENT_FILE_BUCKET).upload(path, bytes, {
+          contentType: mime,
+          upsert: false,
+        });
+        bytes.fill(0);
+        if (error) {
+          const status = Number(error.statusCode || error.status);
+          const conflict = status === 409 || /already exists|duplicate|conflict/i.test(String(error.message || error.code || ''));
+          if (conflict) return res.status(409).json({ error: 'Este documento já possui um arquivo.' });
+          return res.status(503).json({ error: 'Não foi possível armazenar o arquivo.' });
+        }
+      } catch {
+        bytes.fill(0);
+        return res.status(503).json({ error: 'Não foi possível armazenar o arquivo.' });
+      }
+      return res.status(201).json({ file: { available: true } });
+    });
+
+  app.get('/professional-documents/:id/file', rateLimit, requireAuth, getAccessibleProfessionalDocument, async (req, res) => {
+    const path = `${req.professionalDocument.organization_id}/${req.professionalDocument.id}`;
+    let file;
+    try {
+      const { data, error } = await req.supabase.storage.from(PROFESSIONAL_DOCUMENT_FILE_BUCKET).download(path);
+      if (error) {
+        const status = Number(error.statusCode || error.status);
+        if (status === 404 || /object not found|not found/i.test(String(error.message || error.code || ''))) {
+          return res.status(404).json({ error: 'Arquivo do documento não encontrado.' });
+        }
+        return res.status(503).json({ error: 'Não foi possível obter o arquivo.' });
+      }
+      if (!data || typeof data.arrayBuffer !== 'function') return res.status(503).json({ error: 'Não foi possível obter o arquivo.' });
+      const mime = String(data.type || data.contentType || '').toLowerCase();
+      if (!PROFESSIONAL_DOCUMENT_FILE_MIME_EXTENSIONS.has(mime)) return res.status(503).json({ error: 'Arquivo armazenado inválido.' });
+      file = Buffer.from(await data.arrayBuffer());
+      if (!file.length || file.length > MAX_PROFESSIONAL_DOCUMENT_FILE_BYTES || !matchesAttachmentSignature(mime, file)) {
+        file.fill(0);
+        return res.status(503).json({ error: 'Arquivo armazenado inválido.' });
+      }
+      const extension = mime === 'application/pdf' ? 'pdf' : mime === 'image/jpeg' ? 'jpg' : 'png';
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Content-Length', String(file.length));
+      res.setHeader('Content-Disposition', `attachment; filename="professional-document-${req.professionalDocument.id}.${extension}"`);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+      return res.end(file, () => file.fill(0));
+    } catch {
+      if (Buffer.isBuffer(file)) file.fill(0);
+      return res.status(503).json({ error: 'Não foi possível obter o arquivo.' });
+    }
   });
 
   app.get('/patients', rateLimit, requireAuth, async (req, res) => {
@@ -1401,6 +1522,15 @@ export function createApp({ supabaseClientFactory = createClient, now = () => ne
     if (isChatAttachmentPath(req.path)) {
       discardChatAttachmentBody(req);
       if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Arquivo excede o limite de 10 MiB.' });
+      if (err?.type === 'encoding.unsupported') return res.status(415).json({ error: 'Codificação do arquivo não aceita.' });
+      if (['entity.parse.failed', 'request.aborted', 'request.size.invalid'].includes(err?.type)) {
+        return res.status(400).json({ error: 'O corpo binário do arquivo é inválido.' });
+      }
+      return res.status(500).json({ error: 'Não foi possível receber o arquivo.' });
+    }
+    if (req.method === 'POST' && isProfessionalDocumentFilePath(req.path)) {
+      discardChatAttachmentBody(req);
+      if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Arquivo excede o limite de 5 MiB.' });
       if (err?.type === 'encoding.unsupported') return res.status(415).json({ error: 'Codificação do arquivo não aceita.' });
       if (['entity.parse.failed', 'request.aborted', 'request.size.invalid'].includes(err?.type)) {
         return res.status(400).json({ error: 'O corpo binário do arquivo é inválido.' });

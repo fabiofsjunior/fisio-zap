@@ -17,6 +17,38 @@ type ProfessionalDocument = {
 type DocumentType = ProfessionalDocument['document_type'];
 type DocumentStatus = 'active' | 'archived';
 type Filter = 'active' | 'archived' | 'all';
+type DocumentFileUIState = {
+  selectedFile?: File;
+  uploadProgress?: number;
+  uploading?: boolean;
+  downloading?: boolean;
+  uploadedThisSession?: boolean;
+  error?: string;
+};
+
+export const MAX_PROFESSIONAL_DOCUMENT_FILE_BYTES = 5 * 1024 * 1024;
+const allowedFileTypes: Record<string, { mime: string; extensions: string[] }> = {
+  'application/pdf': { mime: 'application/pdf', extensions: ['pdf'] },
+  'image/jpeg': { mime: 'image/jpeg', extensions: ['jpg', 'jpeg'] },
+  'image/png': { mime: 'image/png', extensions: ['png'] },
+};
+
+export function validateProfessionalDocumentFile(file: Pick<File, 'name' | 'size' | 'type'>) {
+  if (file.size <= 0) return { error: 'O arquivo está vazio.' };
+  if (file.size > MAX_PROFESSIONAL_DOCUMENT_FILE_BYTES) return { error: 'O arquivo deve ter no máximo 5 MiB.' };
+  const extension = file.name.split('.').pop()?.toLowerCase() || '';
+  const inferred = Object.values(allowedFileTypes).find(type => type.extensions.includes(extension));
+  const mime = file.type || inferred?.mime || '';
+  const rule = allowedFileTypes[mime];
+  if (!rule || !rule.extensions.includes(extension)) {
+    return { error: 'Escolha um arquivo PDF, JPEG ou PNG com extensão e tipo correspondentes.' };
+  }
+  return { mime };
+}
+
+function fileSizeLabel(bytes: number) {
+  return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 const typeLabels: Record<DocumentType, string> = {
   registration: 'Registro profissional',
@@ -44,19 +76,79 @@ export function expiryState(document: ProfessionalDocument, today: string) {
   return 'valid';
 }
 
-async function documentsApi<T>(organizationId: string, path: string, options: RequestInit = {}): Promise<T> {
+async function documentsHeaders(organizationId: string, initial?: HeadersInit) {
   const client = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   const { data: { session } } = await client.auth.getSession();
   if (!session?.access_token) throw new Error('Entre novamente para acessar seus documentos.');
 
-  const headers = new Headers(options.headers);
+  const headers = new Headers(initial);
   headers.set('Authorization', `Bearer ${session.access_token}`);
   headers.set('X-FisioZap-Organization-Id', organizationId);
+  return headers;
+}
+
+async function documentsApi<T>(organizationId: string, path: string, options: RequestInit = {}): Promise<T> {
+  const headers = await documentsHeaders(organizationId, options.headers);
   if (options.body) headers.set('Content-Type', 'application/json');
   const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}${path}`, { ...options, headers });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || 'Não foi possível acessar os documentos profissionais.');
   return body as T;
+}
+
+function fileApiError(status: number, serverMessage?: string) {
+  if (status === 404) return 'Este documento ainda não tem arquivo anexado.';
+  if (status === 409) return 'Este documento já possui um arquivo. Baixe o arquivo existente.';
+  if (status === 413) return 'O arquivo deve ter no máximo 5 MiB.';
+  return serverMessage || 'Não foi possível concluir a operação com o arquivo.';
+}
+
+async function uploadDocumentFile(organizationId: string, documentId: string, file: File, mime: string, onProgress: (progress: number) => void) {
+  const headers = await documentsHeaders(organizationId, {
+    'Content-Type': mime,
+    'X-FisioZap-File-Name': encodeURIComponent(file.name),
+  });
+  return new Promise<void>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('POST', `${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/professional-documents/${encodeURIComponent(documentId)}/file`);
+    headers.forEach((value, key) => request.setRequestHeader(key, value));
+    request.upload.onprogress = event => {
+      if (event.lengthComputable && event.total > 0) onProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    request.onerror = () => reject(new Error('Não foi possível enviar o arquivo. Verifique sua conexão e tente novamente.'));
+    request.onabort = () => reject(new Error('O envio do arquivo foi interrompido.'));
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) {
+        resolve();
+        return;
+      }
+      let message = '';
+      try { message = JSON.parse(request.responseText)?.error || ''; } catch { /* response was not JSON */ }
+      reject(new Error(fileApiError(request.status, message)));
+    };
+    request.send(file);
+  });
+}
+
+async function downloadDocumentFile(organizationId: string, documentId: string) {
+  const headers = await documentsHeaders(organizationId);
+  const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/professional-documents/${encodeURIComponent(documentId)}/file`, { headers });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(fileApiError(response.status, body.error));
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const filename = disposition.match(/filename="([^"]+)"/i)?.[1] || `documento-profissional-${documentId}`;
+  const objectUrl = URL.createObjectURL(blob);
+  const link = window.document.createElement('a');
+  link.href = objectUrl;
+  link.download = filename;
+  link.style.display = 'none';
+  window.document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
 export default function ProfessionalDocumentsPanel({ organizationId }: { organizationId: string }) {
@@ -76,6 +168,7 @@ export default function ProfessionalDocumentsPanel({ organizationId }: { organiz
   const [updatingId, setUpdatingId] = useState('');
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState(false);
+  const [documentFileUI, setDocumentFileUI] = useState<Record<string, DocumentFileUIState>>({});
   const requestId = useRef(0);
   const currentOrganization = useRef(organizationId);
   currentOrganization.current = organizationId;
@@ -185,6 +278,51 @@ export default function ProfessionalDocumentsPanel({ organizationId }: { organiz
     } finally { setUpdatingId(''); }
   }
 
+  function setDocumentFileState(documentId: string, update: Partial<DocumentFileUIState>) {
+    setDocumentFileUI(current => ({ ...current, [documentId]: { ...current[documentId], ...update } }));
+  }
+
+  function selectDocumentFile(documentId: string, file?: File) {
+    if (!file) return; // Cancelling the native picker keeps any previous choice intact.
+    const validation = validateProfessionalDocumentFile(file);
+    if (validation.error) {
+      setDocumentFileState(documentId, { error: validation.error });
+      return;
+    }
+    setDocumentFileState(documentId, { selectedFile: file, error: undefined });
+  }
+
+  async function attachDocumentFile(documentId: string) {
+    const fileState = documentFileUI[documentId];
+    if (!fileState?.selectedFile || fileState.uploading) return;
+    const validation = validateProfessionalDocumentFile(fileState.selectedFile);
+    if (validation.error || !validation.mime) {
+      setDocumentFileState(documentId, { error: validation.error || 'Tipo de arquivo não aceito.' });
+      return;
+    }
+    setDocumentFileState(documentId, { uploading: true, uploadProgress: 0, error: undefined });
+    try {
+      await uploadDocumentFile(organizationId, documentId, fileState.selectedFile, validation.mime, progress => {
+        setDocumentFileState(documentId, { uploadProgress: progress });
+      });
+      setDocumentFileState(documentId, { uploading: false, uploadProgress: 100, uploadedThisSession: true, selectedFile: undefined });
+    } catch (cause) {
+      setDocumentFileState(documentId, { uploading: false, error: cause instanceof Error ? cause.message : 'Não foi possível enviar o arquivo.' });
+    }
+  }
+
+  async function downloadDocument(documentId: string) {
+    if (documentFileUI[documentId]?.downloading) return;
+    setDocumentFileState(documentId, { downloading: true, error: undefined });
+    try {
+      await downloadDocumentFile(organizationId, documentId);
+    } catch (cause) {
+      setDocumentFileState(documentId, { error: cause instanceof Error ? cause.message : 'Não foi possível baixar o arquivo.' });
+    } finally {
+      setDocumentFileState(documentId, { downloading: false });
+    }
+  }
+
   return <section className="module-screen documents-screen" aria-label="Documentos profissionais">
     <div className="panel-heading">
       <div><span className="eyebrow">DOCUMENTOS PROFISSIONAIS</span><h2>Registros e vencimentos</h2><p>Acompanhe seus documentos profissionais e prazos de validade.</p></div>
@@ -196,7 +334,7 @@ export default function ProfessionalDocumentsPanel({ organizationId }: { organiz
       <div className="panel documents-stat documents-stat-expired"><span>Vencidos</span><strong>{expiredCount}</strong></div>
     </div>
 
-    <div className="panel documents-privacy"><strong>Somente dados profissionais</strong><p>Cadastre identificação e validade. Não inclua dados clínicos ou de pacientes. O FisioZap não armazena arquivos nesta tela.</p></div>
+    <div className="panel documents-privacy"><strong>Arquivos privados</strong><p>Anexe um PDF, JPEG ou PNG de até 5 MiB por documento. Os arquivos são enviados e baixados com sua sessão autenticada; não inclua dados clínicos ou de pacientes.</p></div>
 
     {error && <div className="panel documents-error" role="alert"><p>{error}</p>{loadError && <button type="button" className="documents-retry" onClick={() => void refresh()} disabled={loading}>Tentar novamente</button>}</div>}
 
@@ -230,7 +368,25 @@ export default function ProfessionalDocumentsPanel({ organizationId }: { organiz
               {document.reference && <span className="documents-reference">Referência: {document.reference}</span>}
               {document.expires_on && <time className="documents-expiry" dateTime={document.expires_on}>{state === 'expired' ? 'Venceu em' : 'Vencimento'} {formatDate(document.expires_on)}</time>}
             </div>
-            <div className="documents-actions"><button type="button" className="documents-secondary" onClick={() => beginEditing(document)} disabled={Boolean(updatingId)}>Editar</button>{document.status !== 'archived' ? <button type="button" className="documents-secondary" onClick={() => void updateStatus(document, 'archived')} disabled={updatingId === document.id}>{updatingId === document.id ? 'Atualizando…' : 'Arquivar'}</button> : <button type="button" className="documents-secondary" onClick={() => void updateStatus(document, 'active')} disabled={updatingId === document.id}>{updatingId === document.id ? 'Atualizando…' : 'Reativar'}</button>}</div></>}
+            <div className="documents-row-tools">
+              <div className="documents-actions">
+                <button type="button" className="documents-secondary" onClick={() => beginEditing(document)} disabled={Boolean(updatingId)}>Editar</button>
+                {document.status !== 'archived' ? <button type="button" className="documents-secondary" onClick={() => void updateStatus(document, 'archived')} disabled={updatingId === document.id}>{updatingId === document.id ? 'Atualizando…' : 'Arquivar'}</button> : <button type="button" className="documents-secondary" onClick={() => void updateStatus(document, 'active')} disabled={updatingId === document.id}>{updatingId === document.id ? 'Atualizando…' : 'Reativar'}</button>}
+              </div>
+              {(() => {
+                const fileState = documentFileUI[document.id] || {};
+                const pickerId = `professional-document-file-${document.id}`;
+                return <div className="documents-file-tools">
+                  <input className="documents-file-input" id={pickerId} type="file" accept=".pdf,application/pdf,.jpg,.jpeg,image/jpeg,.png,image/png" aria-label={`Escolher arquivo para ${document.name}`} onChange={event => { selectDocumentFile(document.id, event.currentTarget.files?.[0]); event.currentTarget.value = ''; }} disabled={Boolean(fileState.uploading || fileState.downloading)} />
+                  {!fileState.selectedFile && !fileState.uploadedThisSession && <label className="documents-secondary documents-file-picker" htmlFor={pickerId}>Escolher arquivo</label>}
+                  {fileState.selectedFile && <><span className="documents-selected-file">{fileState.selectedFile.name} · {fileSizeLabel(fileState.selectedFile.size)}</span><button type="button" className="documents-primary" onClick={() => void attachDocumentFile(document.id)} disabled={Boolean(fileState.uploading || fileState.downloading)}>{fileState.uploading ? 'Enviando…' : 'Anexar arquivo'}</button><button type="button" className="documents-secondary" onClick={() => setDocumentFileState(document.id, { selectedFile: undefined, error: undefined })} disabled={Boolean(fileState.uploading)}>Cancelar escolha</button></>}
+                  <button type="button" className="documents-secondary" onClick={() => void downloadDocument(document.id)} disabled={Boolean(fileState.downloading || fileState.uploading)}>{fileState.downloading ? 'Baixando…' : 'Baixar arquivo'}</button>
+                  {fileState.uploadedThisSession && <span className="documents-file-confirmation" role="status">Arquivo enviado nesta sessão.</span>}
+                  {fileState.uploading && <div className="documents-upload-progress" role="status"><span>Enviando arquivo… {fileState.uploadProgress ?? 0}%</span><progress aria-label={`Envio de ${fileState.selectedFile?.name || 'arquivo'}`} max="100" value={fileState.uploadProgress ?? 0} /></div>}
+                  {fileState.error && <p className="documents-file-error" role="alert">{fileState.error}</p>}
+                </div>;
+              })()}
+            </div></>}
           </li>;
         })}
       </ul>}

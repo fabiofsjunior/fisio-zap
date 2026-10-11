@@ -54,8 +54,8 @@ jobs:
             echo "Invalid PostgreSQL dollar-quoting detected. Use do $ ... end $;."
             exit 1
           fi
-      - name: Start local Supabase database only
-        run: supabase start -x gotrue,realtime,storage-api,imgproxy,kong,mailpit,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
+      - name: Start local Supabase with Storage schema
+        run: supabase start
       - name: Reset from migrations
         run: supabase db reset --local --no-seed
       - name: Lint local schema
@@ -76,6 +76,7 @@ jobs:
         with:
           version: 2.119.0
       - run: npm ci --no-audit --no-fund
+      - run: npm install --prefix backend --no-audit --no-fund
       - name: Start isolated local Supabase
         run: |
           supabase init --force
@@ -95,3 +96,4 @@ jobs:
           export FISIOZAP_TEST_ORG="FisioZap CI RLS"
           node scripts/bootstrap-test-accounts.mjs
           node scripts/rls-negative-test.mjs
+          node scripts/storage-professional-documents-test.mjs

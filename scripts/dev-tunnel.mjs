@@ -128,9 +128,13 @@ export function createApplicationEnvironment(baseEnv, publicUrl) {
     Object.entries(baseEnv).filter(([name]) => name.toUpperCase() !== 'SUPABASE_SERVICE_ROLE_KEY'
       && !/^NGROK_.*(?:TOKEN|API_KEY)$/i.test(name)),
   );
-  // Next and dotenv load their own env files from cwd. Shadow any service-role key there too.
+  // Next and dotenv load their own env files from cwd. Shadow the key in the web process.
   sanitized.SUPABASE_SERVICE_ROLE_KEY = '';
-  return createTunnelEnvironment(sanitized, publicUrl);
+  const appEnv = createTunnelEnvironment(sanitized, publicUrl);
+  // Private document writes are validated by the API. Only that local server may
+  // receive the privileged key; neither Next nor the ngrok process receives it.
+  appEnv.backend.SUPABASE_SERVICE_ROLE_KEY = baseEnv.SUPABASE_SERVICE_ROLE_KEY || '';
+  return appEnv;
 }
 
 export function canBindLoopback(port, host = '127.0.0.1') {
