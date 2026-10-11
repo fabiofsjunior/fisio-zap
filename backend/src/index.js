@@ -22,6 +22,10 @@ const PATIENT_FIELDS = ['id','organization_id','professional_id','group_id','ful
 const FINANCE_ORG_ROLES = new Set(['owner', 'coordinator', 'administrative']);
 const FINANCE_ROLES = new Set([...FINANCE_ORG_ROLES, 'professional']);
 const MAX_FINANCIAL_AMOUNT_CENTS = 999_999_999_999;
+const DOCUMENT_ORG_ROLES = new Set(['owner', 'coordinator', 'administrative']);
+const DOCUMENT_TYPES = new Set(['registration', 'certificate', 'license', 'other']);
+const DOCUMENT_STATUSES = new Set(['active', 'archived', 'expired']);
+const PROFESSIONAL_DOCUMENT_FIELDS = 'id,organization_id,professional_id,name,document_type,reference,expires_on,status,created_at,updated_at';
 
 function isCivilDate(value) {
   if (typeof value !== 'string') return false;
@@ -32,6 +36,42 @@ function isCivilDate(value) {
   const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
   const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   return day >= 1 && day <= days[month - 1];
+}
+
+function sanitizeProfessionalDocument(document, today) {
+  const status = document.status === 'archived'
+    ? 'archived'
+    : document.expires_on && document.expires_on < today ? 'expired' : 'active';
+  return {
+    id: document.id,
+    organization_id: document.organization_id,
+    professional_id: document.professional_id,
+    name: document.name,
+    document_type: document.document_type,
+    reference: document.reference ?? null,
+    expires_on: document.expires_on ?? null,
+    status,
+    created_at: document.created_at,
+    updated_at: document.updated_at,
+  };
+}
+
+function validateProfessionalDocument(input, { partial = false } = {}) {
+  const errors = {};
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return { body: 'Objeto obrigatório.' };
+  const allowed = new Set(['name', 'document_type', 'reference', 'expires_on', 'status']);
+  for (const key of Object.keys(input)) if (!allowed.has(key)) errors[key] = 'Campo gerenciado pelo sistema ou não permitido.';
+  if (!partial || input.name !== undefined) {
+    if (typeof input.name !== 'string' || input.name.trim().length < 2 || input.name.trim().length > 120) errors.name = 'O nome deve ter entre 2 e 120 caracteres.';
+  }
+  if (!partial || input.document_type !== undefined) {
+    if (!DOCUMENT_TYPES.has(input.document_type)) errors.document_type = 'Tipo de documento inválido.';
+  }
+  if (input.reference !== undefined && input.reference !== null && (typeof input.reference !== 'string' || input.reference.trim().length > 120)) errors.reference = 'Referência inválida.';
+  if (input.expires_on !== undefined && input.expires_on !== null && input.expires_on !== '' && !isCivilDate(input.expires_on)) errors.expires_on = 'Data de vencimento inválida.';
+  if (input.status !== undefined && !['active', 'archived'].includes(input.status)) errors.status = 'Status inválido.';
+  if (partial && Object.keys(input).length === 0) errors.body = 'Informe ao menos um campo para atualizar.';
+  return errors;
 }
 
 function monthRange(month) {
@@ -269,6 +309,78 @@ export function createApp({ supabaseClientFactory = createClient, now = () => ne
   }
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'fisio-zap-backend' }));
+
+  function professionalDocumentScope(query, membership, userId) {
+    let scoped = query.eq('organization_id', membership.organization_id);
+    if (!DOCUMENT_ORG_ROLES.has(membership.role)) scoped = scoped.eq('professional_id', userId);
+    return scoped;
+  }
+  function professionalDocumentsToday() {
+    const instant = now();
+    const date = instant instanceof Date ? instant : new Date(instant);
+    return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+  }
+  app.get('/professional-documents', rateLimit, requireAuth, async (req, res) => {
+    const membership = await getMembership(req);
+    if (!membership) return rejectMembership(req, res);
+    if (typeof req.query.status === 'string' && !DOCUMENT_STATUSES.has(req.query.status)) return res.status(422).json({ error: 'Status inválido.' });
+    if (typeof req.query.document_type === 'string' && !DOCUMENT_TYPES.has(req.query.document_type)) return res.status(422).json({ error: 'Tipo de documento inválido.' });
+    let query = professionalDocumentScope(
+      req.supabase.from('professional_documents').select(PROFESSIONAL_DOCUMENT_FIELDS),
+      membership,
+      req.user.id,
+    ).order('expires_on', { ascending: true }).order('created_at', { ascending: false });
+    if (typeof req.query.document_type === 'string') query = query.eq('document_type', req.query.document_type);
+    const { data, error } = await query;
+    if (error) return res.status(400).json({ error: 'Não foi possível consultar os documentos profissionais.' });
+    const today = professionalDocumentsToday();
+    let documents = (data ?? []).map(document => sanitizeProfessionalDocument(document, today));
+    if (typeof req.query.status === 'string') documents = documents.filter(document => document.status === req.query.status);
+    return res.json({ documents });
+  });
+
+  app.post('/professional-documents', rateLimit, requireAuth, async (req, res) => {
+    const membership = await getMembership(req);
+    if (!membership) return rejectMembership(req, res);
+    const body = req.body;
+    const errors = validateProfessionalDocument(body);
+    if (Object.keys(errors).length) return res.status(422).json({ error: 'Dados inválidos.', fields: errors });
+    const status = body.status || 'active';
+    const { data, error } = await req.supabase.from('professional_documents').insert({
+      organization_id: membership.organization_id,
+      professional_id: req.user.id,
+      name: body.name.trim(),
+      document_type: body.document_type,
+      reference: body.reference?.trim() || null,
+      expires_on: body.expires_on || null,
+      status,
+    }).select(PROFESSIONAL_DOCUMENT_FIELDS).single();
+    if (error) return res.status(400).json({ error: 'Não foi possível criar o documento profissional.' });
+    return res.status(201).json({ document: sanitizeProfessionalDocument(data, professionalDocumentsToday()) });
+  });
+
+  app.patch('/professional-documents/:id', rateLimit, requireAuth, async (req, res) => {
+    const membership = await getMembership(req);
+    if (!membership) return rejectMembership(req, res);
+    if (!isUuid(req.params.id)) return res.status(400).json({ error: 'Documento inválido.' });
+    const body = req.body;
+    const errors = validateProfessionalDocument(body, { partial: true });
+    if (Object.keys(errors).length) return res.status(422).json({ error: 'Dados inválidos.', fields: errors });
+    let query = professionalDocumentScope(
+      req.supabase.from('professional_documents').update({
+        ...Object.fromEntries(Object.entries(body).map(([key, value]) => [
+          key,
+          key === 'name' || key === 'reference' ? (value?.trim() || null) : key === 'expires_on' ? (value || null) : value,
+        ])),
+      }),
+      membership,
+      req.user.id,
+    ).eq('id', req.params.id);
+    const { data, error } = await query.select(PROFESSIONAL_DOCUMENT_FIELDS).maybeSingle();
+    if (error) return res.status(400).json({ error: 'Não foi possível atualizar o documento profissional.' });
+    if (!data) return res.status(404).json({ error: 'Documento profissional não encontrado.' });
+    return res.json({ document: sanitizeProfessionalDocument(data, professionalDocumentsToday()) });
+  });
 
   app.get('/patients', rateLimit, requireAuth, async (req, res) => {
     const membership = await getMembership(req);

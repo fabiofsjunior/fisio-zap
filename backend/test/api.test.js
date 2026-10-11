@@ -7,7 +7,7 @@ process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY='test-anon-key';
 const {createApp}=await import('../src/index.js');
 const {getTranscriptionConfig,transcribeWithOpenAI}=await import('../src/chat-transcription.js');
 
-function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],operationErrors={},selectCountOverrides={}}={}){
+function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],professionalDocuments=[],operationErrors={},selectCountOverrides={}}={}){
   const memberRows=(memberships??[membership]).map(row=>({...row,user_id:row.user_id??user.id}));
   const calls=[];
   const queries=[];
@@ -22,6 +22,7 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
     notifications,
     appointments,
     financial_entries:financialEntries,
+    professional_documents:professionalDocuments,
   };
   const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):operator==='gte'?Date.parse(row[key])>=Date.parse(value):operator==='lt'?Date.parse(row[key])<Date.parse(value):row[key]===value));
   return {
@@ -95,6 +96,52 @@ test('authenticated Supabase data client forwards the verified JWT for RLS',asyn
     const response=await request(s.baseUrl,'/encounters',{headers:{Authorization:'Bearer valid'}});
     assert.equal(response.status,200);
     assert.equal(await accessToken(),'valid');
+  }finally{await s.close()}
+});
+
+test('professional document API creates metadata only and derives expired status',async()=>{
+  const s=await startServer({},null,()=>new Date('2026-10-11T12:00:00.000Z'));
+  try{
+    const created=await request(s.baseUrl,'/professional-documents',{method:'POST',headers:{Authorization:'Bearer valid'},body:{
+      name:'  CREFITO  ',document_type:'registration',reference:'  12345-F  ',expires_on:'2026-10-10',
+    }});
+    assert.equal(created.status,201);
+    const {document}=await created.json();
+    assert.equal(document.name,'CREFITO');
+    assert.equal(document.reference,'12345-F');
+    assert.equal(document.status,'expired');
+    assert.deepEqual(Object.keys(document).filter(key=>!['id','created_at','updated_at'].includes(key)).sort(),['document_type','expires_on','name','organization_id','professional_id','reference','status'].sort());
+    assert.equal(s.database.calls.includes('professional_documents'),true);
+  }finally{await s.close()}
+});
+
+test('professional documents are scoped to the signed-in professional; org managers can review org documents',async()=>{
+  const organization='22222222-2222-4222-8222-222222222222';
+  const own={id:'33333333-3333-4333-8333-333333333333',organization_id:organization,professional_id:'11111111-1111-4111-8111-111111111111',name:'CREFITO',document_type:'registration',reference:null,expires_on:'2026-12-01',status:'active'};
+  const peer={...own,id:'44444444-4444-4444-8444-444444444444',professional_id:'55555555-5555-4555-8555-555555555555',name:'Certificado'};
+  const professional=await startServer({professionalDocuments:[own,peer]},null,()=>new Date('2026-10-11T12:00:00.000Z'));
+  const owner=await startServer({membership:{organization_id:organization,role:'owner'},professionalDocuments:[own,peer]},null,()=>new Date('2026-10-11T12:00:00.000Z'));
+  try{
+    const mine=await request(professional.baseUrl,'/professional-documents',{headers:{Authorization:'Bearer valid'}});
+    assert.deepEqual((await mine.json()).documents.map(item=>item.id),[own.id]);
+    const managed=await request(owner.baseUrl,'/professional-documents',{headers:{Authorization:'Bearer valid'}});
+    assert.deepEqual((await managed.json()).documents.map(item=>item.id),[own.id,peer.id]);
+  }finally{await professional.close();await owner.close()}
+});
+
+test('professional document updates allow archive and reject unsupported fields or invalid dates',async()=>{
+  const document={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',name:'CREFITO',document_type:'registration',reference:null,expires_on:null,status:'active'};
+  const s=await startServer({professionalDocuments:[document]},null,()=>new Date('2026-10-11T12:00:00.000Z'));
+  try{
+    const archived=await request(s.baseUrl,'/professional-documents/'+document.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{status:'archived'}});
+    assert.equal(archived.status,200);
+    assert.equal((await archived.json()).document.status,'archived');
+    const invalidDate=await request(s.baseUrl,'/professional-documents/'+document.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{expires_on:'2026-02-29'}});
+    assert.equal(invalidDate.status,422);
+    const extra=await request(s.baseUrl,'/professional-documents/'+document.id,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{storage_path:'files/doc.pdf'}});
+    assert.equal(extra.status,422);
+    const badType=await request(s.baseUrl,'/professional-documents',{method:'POST',headers:{Authorization:'Bearer valid'},body:{name:'Carteira',document_type:'council_document'}});
+    assert.equal(badType.status,422);
   }finally{await s.close()}
 });
 

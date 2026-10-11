@@ -1,5 +1,11 @@
 # FisioZap — Checkpoint global para agentes
 
+## Sprint S9.1 — 11/10/2026
+- `TESTES` atual: merge `00b24312a4b7a59d6b157751d9fd73182fd96bdb` da PR #39, com CI #188 (4/4) e Android #6 aprovados. `main` permanece `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`.
+- S8 (WhatsApp externo) continua adiada pela escolha do Chat no próprio app. S11.1 e túnel ngrok integrados, com homologação no aparelho do proprietário ainda pendente (issues #36 e #38).
+- S9.1 em `feature/s9-professional-documents`, issue #40: API, UI, migration e pgTAP para metadados de documentos profissionais e vencimentos. Sem arquivos, dados clínicos, integração externa ou migration remota. Veja `docs/S9-DOCUMENTOS-PROFISSIONAIS.md`.
+- A integração em `TESTES` depende de revisão independente e CI oficial; a homologação funcional depende do proprietário. Não fechar issue #40 por testes automatizados.
+
 **Branch obrigatória:** `feature/* → TESTES → main`
 **Estado observado em 10/10/2026:** S6.1 e S7.1–S7.4 integradas em `TESTES`; S11.1 Android em validação pelo CI; homologações funcionais locais do proprietário pendentes.
 

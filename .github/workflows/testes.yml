@@ -22,6 +22,7 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: node --test scripts/tests/*.test.mjs
       - run: npm run test:chat-composer
+      - run: npm run test:professional-documents
       - run: npm run build
       - run: npm run test:agenda-day-range
 

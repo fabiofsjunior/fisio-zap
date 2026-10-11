@@ -8,6 +8,7 @@ import AgendaPanel from '@/app/components/agenda-panel';
 import ClinicalPanel from '@/app/components/clinical-panel';
 import NotificationsPanel from '@/app/components/notifications-panel';
 import FinancialPanel from '@/app/components/financial-panel';
+import ProfessionalDocumentsPanel from '@/app/components/professional-documents-panel';
 import ChatComposer, { formatChatFileSize, getChatFileMimeType } from '@/app/components/chat-composer';
 import { getLocalDayRange } from '@/app/lib/agenda-date-range.mjs';
 
@@ -27,6 +28,7 @@ const modules = [
   ['🧠', 'Exercícios e protocolos', 'Seu método e materiais próprios.'],
   ['🔔', 'Notificações', 'Pendências e pontos de atenção.'],
   ['💰', 'Financeiro', 'Entradas e despesas.'],
+  ['📄', 'Documentos profissionais', 'Registros, certificados e vencimentos.'],
 ];
 
 export default function FisioShell({ email, role, organizationId, userId }: { email: string | null; role: FisioRole; organizationId: string; userId: string }) {
@@ -360,6 +362,7 @@ export default function FisioShell({ email, role, organizationId, userId }: { em
     if (activeModule === 'Pacientes') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><PatientsPanel /></>;
     if (activeModule === 'Notificações') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><NotificationsPanel organizationId={organizationId} /></>;
     if (activeModule === 'Financeiro') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><FinancialPanel organizationId={organizationId} /></>;
+    if (activeModule === 'Documentos profissionais') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><ProfessionalDocumentsPanel organizationId={organizationId} /></>;
     if (activeModule === 'Evoluções' || activeModule === 'Exercícios e protocolos') return <ClinicalPanel organizationId={organizationId} userId={userId} canManageClinicalRecords={canManageClinicalRecords} onClose={() => setActiveModule(null)} />;
     const [, title, description] = active;
     const actions: Record<string, string[]> = {
