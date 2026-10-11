@@ -4,13 +4,15 @@ import http from 'node:http';
 process.env.NODE_ENV='test';
 process.env.NEXT_PUBLIC_SUPABASE_URL='http://test.local';
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY='test-anon-key';
+process.env.SUPABASE_SERVICE_ROLE_KEY='test-service-role-secret';
 const {createApp}=await import('../src/index.js');
 const {getTranscriptionConfig,transcribeWithOpenAI}=await import('../src/chat-transcription.js');
 
-function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],professionalDocuments=[],operationErrors={},selectCountOverrides={}}={}){
+function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],professionalDocuments=[],operationErrors={},selectCountOverrides={},storageErrors={},storedFiles=new Map()}={}){
   const memberRows=(memberships??[membership]).map(row=>({...row,user_id:row.user_id??user.id}));
   const calls=[];
   const queries=[];
+  const storageCalls=[];
   const rowsByTable={
     organization_members:memberRows,
     patients,
@@ -26,8 +28,25 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
   };
   const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):operator==='gte'?Date.parse(row[key])>=Date.parse(value):operator==='lte'?Date.parse(row[key])<=Date.parse(value):operator==='lt'?Date.parse(row[key])<Date.parse(value):row[key]===value));
   return {
-    calls,queries,
+    calls,queries,storageCalls,storedFiles,
     auth:{getUser:async token=>token==='valid'?{data:{user},error:null}:{data:{user:null},error:new Error('invalid token')}},
+    storage:{from(bucket){return {
+      upload:async(path,body,options)=>{
+        storageCalls.push({method:'upload',bucket,path,options});
+        if(storageErrors.upload)return {data:null,error:storageErrors.upload};
+        const key=`${bucket}/${path}`;
+        if(storedFiles.has(key))return {data:null,error:{statusCode:409,message:'The resource already exists'}};
+        storedFiles.set(key,{bytes:Buffer.from(body),contentType:options.contentType});
+        return {data:{path},error:null};
+      },
+      download:async(path)=>{
+        storageCalls.push({method:'download',bucket,path});
+        if(storageErrors.download)return {data:null,error:storageErrors.download};
+        const value=storedFiles.get(`${bucket}/${path}`);
+        if(!value)return {data:null,error:{statusCode:404,message:'Object not found'}};
+        return {data:new Blob([value.bytes],{type:value.contentType}),error:null};
+      },
+    }}},
     from(table){
       calls.push(table);
       const state={table,values:null,filters:[],operation:'select',limit:null,range:null,orderBy:[]};
@@ -78,7 +97,7 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
     }
   };
 }
-function startServer(options={},supabaseClientFactory=null,now=()=>new Date(),appOptions={}){const database=mock(options);const app=createApp({supabaseClientFactory:supabaseClientFactory??(()=>database),now,...appOptions});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,database,close:()=>{server.close();server.closeAllConnections?.()}})))}
+function startServer(options={},supabaseClientFactory=null,now=()=>new Date(),appOptions={}){const database=mock(options);database.adminFactoryCalls=[];const storageAdminClientFactory=appOptions.storageAdminClientFactory??((url,key,clientOptions)=>{database.adminFactoryCalls.push({url,key,options:clientOptions});return database});const app=createApp({supabaseClientFactory:supabaseClientFactory??(()=>database),now,...appOptions,storageAdminClientFactory});const server=http.createServer(app);return new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve({baseUrl:'http://127.0.0.1:'+server.address().port,database,close:()=>{server.close();server.closeAllConnections?.()}})))}
 async function request(baseUrl,path,options={}){return fetch(baseUrl+path,{...options,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...(options.headers||{})},body:options.body?JSON.stringify(options.body):undefined})}
 async function binaryRequest(baseUrl,body,{mime='application/pdf',filename='document.pdf',path='/chat/attachments',headers={},signal}={}){
 return fetch(baseUrl+path,{method:'POST',body,signal,headers:{
@@ -97,6 +116,25 @@ test('authenticated Supabase data client forwards the verified JWT for RLS',asyn
     const response=await request(s.baseUrl,'/encounters',{headers:{Authorization:'Bearer valid'}});
     assert.equal(response.status,200);
     assert.equal(await accessToken(),'valid');
+  }finally{await s.close()}
+});
+
+test('authenticates with an anon auth client before creating the accessToken RLS client',async()=>{
+  const factoryCalls=[];
+  const factory=(_url,_key,options)=>{
+    factoryCalls.push(options);
+    const client=mock();
+    if(options.accessToken)client.auth={getUser:()=>{throw new Error('getUser must not be called on an accessToken client')}};
+    return client;
+  };
+  const s=await startServer({},factory);
+  try{
+    const response=await request(s.baseUrl,'/encounters',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    assert.equal(factoryCalls.length,2);
+    assert.equal(Object.hasOwn(factoryCalls[0],'accessToken'),false);
+    assert.equal(typeof factoryCalls[1].accessToken,'function');
+    assert.equal(await factoryCalls[1].accessToken(),'valid');
   }finally{await s.close()}
 });
 
@@ -179,6 +217,110 @@ test('professional document updates allow archive and reject unsupported fields 
     const badType=await request(s.baseUrl,'/professional-documents',{method:'POST',headers:{Authorization:'Bearer valid'},body:{name:'Carteira',document_type:'council_document'}});
     assert.equal(badType.status,422);
   }finally{await s.close()}
+});
+
+test('professional document files upload and download bytes privately through the JWT-scoped storage client',async()=>{
+  const document={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',name:'CREFITO',document_type:'registration',status:'active'};
+  const s=await startServer({professionalDocuments:[document]});
+  const bytes=Buffer.concat([Buffer.from('%PDF-1.7\n'),Buffer.from('conteudo privado')]);
+  try{
+    const uploaded=await binaryRequest(s.baseUrl,bytes,{path:`/professional-documents/${document.id}/file`,mime:'application/pdf',filename:'registro.pdf'});
+    assert.equal(uploaded.status,201);
+    const uploadedText=await uploaded.text();
+    assert.deepEqual(JSON.parse(uploadedText),{file:{available:true}});
+    assert.equal(uploadedText.includes(process.env.SUPABASE_SERVICE_ROLE_KEY),false);
+    assert.deepEqual(s.database.adminFactoryCalls,[{url:'http://test.local',key:'test-service-role-secret',options:{auth:{autoRefreshToken:false,persistSession:false}}}]);
+    assert.deepEqual(s.database.storageCalls[0],{method:'upload',bucket:'professional-documents',path:`${document.organization_id}/${document.id}`,options:{contentType:'application/pdf',upsert:false}});
+    const downloaded=await fetch(`${s.baseUrl}/professional-documents/${document.id}/file`,{headers:{Authorization:'Bearer valid'}});
+    assert.equal(downloaded.status,200);
+    const downloadedBytes=Buffer.from(await downloaded.arrayBuffer());
+    assert.deepEqual(downloadedBytes,bytes);
+    assert.equal(downloadedBytes.includes(Buffer.from(process.env.SUPABASE_SERVICE_ROLE_KEY)),false);
+    assert.equal(s.database.adminFactoryCalls.length,1,'download remains on the user-scoped client');
+    assert.match(downloaded.headers.get('content-disposition'),new RegExp(`^attachment; filename="professional-document-${document.id}\\.pdf"$`));
+    assert.equal(downloaded.headers.get('x-content-type-options'),'nosniff');
+    assert.equal(downloaded.headers.get('cache-control'),'private, no-store, max-age=0');
+  }finally{await s.close()}
+});
+
+test('professional document file routes enforce organization and professional row access before reading raw uploads',async()=>{
+  const org='22222222-2222-4222-8222-222222222222';
+  const own={id:'33333333-3333-4333-8333-333333333333',organization_id:org,professional_id:'11111111-1111-4111-8111-111111111111',name:'Meu registro',document_type:'registration',status:'active'};
+  const peer={...own,id:'44444444-4444-4444-8444-444444444444',professional_id:'55555555-5555-4555-8555-555555555555'};
+  const bytes=Buffer.from('%PDF-1.7\nconteudo');
+  const professional=await startServer({professionalDocuments:[own,peer]});
+  const otherOrg=await startServer({membership:{organization_id:'99999999-9999-4999-8999-999999999999',role:'owner'},professionalDocuments:[own]});
+  try{
+    assert.equal((await binaryRequest(professional.baseUrl,bytes,{path:`/professional-documents/${peer.id}/file`,mime:'application/pdf',filename:'peer.pdf'})).status,404);
+    assert.equal(professional.database.storageCalls.length,0);
+    assert.equal(professional.database.adminFactoryCalls.length,0);
+    assert.equal((await fetch(`${professional.baseUrl}/professional-documents/${peer.id}/file`,{headers:{Authorization:'Bearer valid'}})).status,404);
+    assert.equal((await binaryRequest(otherOrg.baseUrl,bytes,{path:`/professional-documents/${own.id}/file`,mime:'application/pdf',filename:'other.pdf'})).status,404);
+    assert.equal(otherOrg.database.storageCalls.length,0);
+    assert.equal(otherOrg.database.adminFactoryCalls.length,0);
+    const unauth=await binaryRequest(professional.baseUrl,bytes,{path:`/professional-documents/${own.id}/file`,mime:'application/pdf',filename:'own.pdf',headers:{Authorization:'Bearer invalid'}});
+    assert.equal(unauth.status,401);
+    assert.equal(professional.database.storageCalls.length,0);
+    assert.equal(professional.database.adminFactoryCalls.length,0);
+  }finally{await professional.close();await otherOrg.close()}
+});
+
+test('professional document file upload enforces the 5 MiB limit and MIME, extension, and signature agreement',async()=>{
+  const document={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',name:'CREFITO',document_type:'registration',status:'active'};
+  const s=await startServer({professionalDocuments:[document]});
+  try{
+    const tooLarge=Buffer.alloc(5*1024*1024+1,0x41);tooLarge.write('%PDF-',0,'ascii');
+    assert.equal((await binaryRequest(s.baseUrl,tooLarge,{path:`/professional-documents/${document.id}/file`,mime:'application/pdf',filename:'registro.pdf'})).status,413);
+    assert.equal((await binaryRequest(s.baseUrl,Buffer.from('%PDF-1.7\n'),{path:`/professional-documents/${document.id}/file`,mime:'image/png',filename:'registro.pdf'})).status,422);
+    assert.equal((await binaryRequest(s.baseUrl,Buffer.from('not a pdf'),{path:`/professional-documents/${document.id}/file`,mime:'application/pdf',filename:'registro.pdf'})).status,422);
+    assert.equal(s.database.storageCalls.length,0);
+    assert.equal(s.database.adminFactoryCalls.length,0,'the privileged factory is not called before MIME, extension, and signature validation');
+  }finally{await s.close()}
+});
+
+test('professional document file upload does not replace an existing object and reports storage outages safely',async()=>{
+  const document={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',name:'CREFITO',document_type:'registration',status:'active'};
+  const key=`professional-documents/${document.organization_id}/${document.id}`;
+  const original=Buffer.from('%PDF-1.7\noriginal');
+  const conflict=await startServer({professionalDocuments:[document],storedFiles:new Map([[key,{bytes:original,contentType:'application/pdf'}]])});
+  const unavailable=await startServer({professionalDocuments:[document],storageErrors:{upload:{statusCode:503,message:'private provider detail'}}});
+  const logged=[];
+  const originalConsoleError=console.error;
+  try{
+    console.error=(...args)=>logged.push(args.join(' '));
+    assert.equal((await binaryRequest(conflict.baseUrl,Buffer.from('%PDF-1.7\nreplacement'),{path:`/professional-documents/${document.id}/file`,mime:'application/pdf',filename:'registro.pdf'})).status,409);
+    assert.deepEqual(conflict.database.storedFiles.get(key).bytes,original);
+    const failed=await binaryRequest(unavailable.baseUrl,original,{path:`/professional-documents/${document.id}/file`,mime:'application/pdf',filename:'registro.pdf'});
+    assert.equal(failed.status,503);
+    assert.deepEqual(await failed.json(),{error:'Não foi possível armazenar o arquivo.'});
+    assert.equal(logged.join(' ').includes(process.env.SUPABASE_SERVICE_ROLE_KEY),false);
+    assert.equal(unavailable.database.adminFactoryCalls.length,1);
+    const downloadDown=await startServer({professionalDocuments:[document],storageErrors:{download:{statusCode:503,message:'private provider detail'}}});
+    try{
+      const failedDownload=await fetch(`${downloadDown.baseUrl}/professional-documents/${document.id}/file`,{headers:{Authorization:'Bearer valid'}});
+      assert.equal(failedDownload.status,503);
+      assert.deepEqual(await failedDownload.json(),{error:'Não foi possível obter o arquivo.'});
+    }finally{await downloadDown.close()}
+  }finally{console.error=originalConsoleError;await conflict.close();await unavailable.close()}
+});
+
+test('professional document upload fails safely without the server-only service role key',async()=>{
+  const document={id:'33333333-3333-4333-8333-333333333333',organization_id:'22222222-2222-4222-8222-222222222222',professional_id:'11111111-1111-4111-8111-111111111111',name:'CREFITO',document_type:'registration',status:'active'};
+  const s=await startServer({professionalDocuments:[document]});
+  const serviceRoleKey=process.env.SUPABASE_SERVICE_ROLE_KEY;
+  try{
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const response=await binaryRequest(s.baseUrl,Buffer.from('%PDF-1.7\nvalid'),{path:`/professional-documents/${document.id}/file`,mime:'application/pdf',filename:'registro.pdf'});
+    const body=await response.text();
+    assert.equal(response.status,503);
+    assert.deepEqual(JSON.parse(body),{error:'O armazenamento privado não está configurado.'});
+    assert.equal(body.includes(serviceRoleKey),false);
+    assert.equal(s.database.adminFactoryCalls.length,0);
+    assert.equal(s.database.storageCalls.length,0);
+  }finally{
+    process.env.SUPABASE_SERVICE_ROLE_KEY=serviceRoleKey;
+    await s.close();
+  }
 });
 
 test('multiple memberships require an explicit authorized organization selection',async()=>{

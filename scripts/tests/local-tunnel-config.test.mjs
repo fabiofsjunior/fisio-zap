@@ -186,7 +186,7 @@ test('validates Supabase URL/key for tunneling without permitting local, insecur
   assert.throws(() => validateTunnelSupabaseConfig({ NEXT_PUBLIC_SUPABASE_URL: 'https://project.supabase.co' }), /SUPABASE_ANON_KEY_MISSING/);
 });
 
-test('restricts ngrok credentials to ngrok and excludes service role from application children', () => {
+test('restricts ngrok credentials to ngrok and service role to backend', () => {
   const source = {
     PATH: '/mock/bin',
     NGROK_AUTHTOKEN: 'tunnel-token-test',
@@ -203,7 +203,7 @@ test('restricts ngrok credentials to ngrok and excludes service role from applic
   const appEnv = createApplicationEnvironment(source, 'https://test-tunnel.ngrok-free.app');
   assert.equal(appEnv.backend.NGROK_AUTHTOKEN, undefined);
   assert.equal(appEnv.frontend.NGROK_AUTHTOKEN, undefined);
-  assert.equal(appEnv.backend.SUPABASE_SERVICE_ROLE_KEY, '');
+  assert.equal(appEnv.backend.SUPABASE_SERVICE_ROLE_KEY, 'never-pass-to-ngrok');
   assert.equal(appEnv.frontend.SUPABASE_SERVICE_ROLE_KEY, '');
 });
 
@@ -362,7 +362,7 @@ test('mocked launch binds loopback ports, builds with the local marker, waits fo
   assert.equal(spawnCalls[1].options.env.FISIOZAP_TUNNEL_RUNTIME, 'local-build');
   assert.equal(spawnCalls[2].options.env.HOST, '127.0.0.1');
   assert.equal(spawnCalls[2].options.env.PORT, '3848');
-  assert.equal(spawnCalls[2].options.env.SUPABASE_SERVICE_ROLE_KEY, '');
+  assert.equal(spawnCalls[2].options.env.SUPABASE_SERVICE_ROLE_KEY, 'backend-local-only-test-key');
   assert.equal(spawnCalls[3].options.env.SUPABASE_SERVICE_ROLE_KEY, '');
   assert.equal(spawnCalls[3].args[1], 'start');
   assert.deepEqual(spawnCalls[3].args.slice(-4), ['--hostname', '127.0.0.1', '--port', String(FRONTEND_PORT)]);
