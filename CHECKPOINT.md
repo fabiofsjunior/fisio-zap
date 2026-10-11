@@ -1,5 +1,10 @@
 # FisioZap — Checkpoint global para agentes
 
+## Sprint S9.2 — 11/10/2026
+- Base remota `TESTES`: merge `90d6a89768d1ad19ce309765982f83a7edd97fb6` da PR #41 (S9.1), CI da PR #190 e pós-merge #191 aprovados 4/4. `main` segue `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`.
+- S9.2 na branch `feature/s9-document-expiry-alerts`, issue #42: consulta somente leitura de vencimentos próprios na central, até 30 dias UTC, sem persistir ou enviar notificações. Veja `docs/S9-AVISOS-VENCIMENTO.md`.
+- Migrations S9.1 só foram reproduzidas no CI local; nenhuma alteração no Supabase remoto. A homologação das issues #40/#42 depende de ambiente de teste com schema S9.1 e confirmação do proprietário. Não promover para `main`.
+
 ## Sprint S9.1 — 11/10/2026
 - `TESTES` atual: merge `00b24312a4b7a59d6b157751d9fd73182fd96bdb` da PR #39, com CI #188 (4/4) e Android #6 aprovados. `main` permanece `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`.
 - S8 (WhatsApp externo) continua adiada pela escolha do Chat no próprio app. S11.1 e túnel ngrok integrados, com homologação no aparelho do proprietário ainda pendente (issues #36 e #38).

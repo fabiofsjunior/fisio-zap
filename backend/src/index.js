@@ -635,6 +635,29 @@ export function createApp({ supabaseClientFactory = createClient, now = () => ne
     const appointments = (data ?? []).map(({ id, starts_at, status }) => ({ id, starts_at, status }));
     return res.json({ appointments });
   });
+  app.get('/notifications/upcoming-documents', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res); if (!membership) return;
+    const today = professionalDocumentsToday();
+    const todayDate = new Date(`${today}T00:00:00.000Z`);
+    const cutoff = new Date(todayDate.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const ownActiveDocuments = () => req.supabase.from('professional_documents')
+      .select('id,name,expires_on')
+      .eq('organization_id', membership.organization_id)
+      .eq('professional_id', req.user.id)
+      .eq('status', 'active');
+    const [expiredResult, soonResult] = await Promise.all([
+      ownActiveDocuments().lt('expires_on', today).order('expires_on', { ascending: false }).limit(50),
+      ownActiveDocuments().gte('expires_on', today).lte('expires_on', cutoff).order('expires_on', { ascending: true }).limit(50),
+    ]);
+    if (expiredResult.error || soonResult.error) return res.status(400).json({ error: 'Não foi possível consultar os alertas de vencimento.' });
+    const documents = [
+      ...(expiredResult.data ?? []).map(({ id, name, expires_on }) => ({ id, name, expires_on, state: 'expired' })),
+      ...(soonResult.data ?? []).map(({ id, name, expires_on }) => ({ id, name, expires_on, state: 'soon' })),
+    ].sort((a, b) => a.state === b.state
+      ? (a.state === 'expired' ? b.expires_on.localeCompare(a.expires_on) : a.expires_on.localeCompare(b.expires_on)) || a.id.localeCompare(b.id)
+      : a.state === 'expired' ? -1 : 1);
+    return res.json({ documents });
+  });
   app.post('/notifications', rateLimit, requireAuth, async (req, res) => {
     const membership = await appointmentScope(req, res); if (!membership) return;
     const errors = validateNotification(req.body);
