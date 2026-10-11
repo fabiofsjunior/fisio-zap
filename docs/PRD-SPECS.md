@@ -605,7 +605,7 @@ O MVP funcional do produto deve priorizar:
 | S6 | Financeiro | S6.1 integrada em `TESTES`; issue #25 aberta para homologação do proprietário |
 | S7 | Assistente IA | S7.1–S7.3 integradas em `TESTES`; S7.4 adiciona transcrição opcional com consentimento e revisão, issue #34; sem interpretação de documentos; homologação local pendente |
 | S8 | WhatsApp externo | pendente de reavaliação: proprietário escolheu interação pelo Chat do próprio app Android, sem conexão externa nesta entrega |
-| S9 | Documentos/integrações | planejada |
+| S9 | Documentos/integrações | S9.1: metadados profissionais e vencimentos em implementação na branch `feature/s9-professional-documents`; arquivos e integrações posteriores; issue #40 aberta |
 | S10 | Clínicas/equipes | planejada |
 | S11 | Aplicativo móvel | S11.1 em implementação: APK Android com Chat existente; issue #36 aberta para homologação |
 | S12 | Escala/freemium/produção | planejada |
