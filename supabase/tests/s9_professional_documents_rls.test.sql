@@ -1,5 +1,5 @@
 begin;
-select plan(16);
+select plan(17);
 
 select ok(
   (select c.relrowsecurity from pg_class c where c.oid = 'public.professional_documents'::regclass),
@@ -80,14 +80,10 @@ select lives_ok(
   'a professional can update their own document'
 );
 
-select is(
-  (with changed as (
-    update public.professional_documents set status = 'archived'
-    where id = 'f9200000-0000-4000-8000-000000000002'
-    returning id
-  ) select count(*)::integer from changed),
-  0,
-  'a professional cannot update a peer document'
+select lives_ok(
+  $$update public.professional_documents set status = 'archived'
+    where id = 'f9200000-0000-4000-8000-000000000002'$$,
+  'a professional peer update matches no accessible row'
 );
 
 select throws_ok(
@@ -110,6 +106,12 @@ select is(
   (select count(*)::integer from public.professional_documents where organization_id = 'f9100000-0000-4000-8000-000000000001'),
   3,
   'an administrative organization member can read professional documents across the organization'
+);
+
+select is(
+  (select status from public.professional_documents where id = 'f9200000-0000-4000-8000-000000000002'),
+  'active',
+  'a peer update did not change another professional document'
 );
 
 select lives_ok(
