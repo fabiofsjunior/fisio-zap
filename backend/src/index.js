@@ -246,10 +246,24 @@ export function createApp({ supabaseClientFactory = createClient, storageAdminCl
   async function requireAuth(req, res, next) {
     const token = getBearerToken(req);
     if (!token || !process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return res.status(401).json({ error: 'Autenticação necessária.' });
-    const supabase = supabaseClientFactory(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, { auth: { autoRefreshToken: false, persistSession: false }, accessToken: async () => token });
-    const { data, error } = await supabase.auth.getUser(token);
-    if (error || !data.user) return res.status(401).json({ error: 'Sessão inválida ou expirada.' });
-    req.user = data.user; req.supabase = supabase; return next();
+    let data;
+    try {
+      const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      const authClient = supabaseClientFactory(url, anonKey, { auth: { autoRefreshToken: false, persistSession: false } });
+      const result = await authClient.auth.getUser(token);
+      if (result.error || !result.data?.user) return res.status(401).json({ error: 'Sessão inválida ou expirada.' });
+      data = result.data;
+      const supabase = supabaseClientFactory(url, anonKey, {
+        auth: { autoRefreshToken: false, persistSession: false },
+        accessToken: async () => token,
+      });
+      req.user = data.user;
+      req.supabase = supabase;
+      return next();
+    } catch {
+      return res.status(503).json({ error: 'Não foi possível validar a sessão.' });
+    }
   }
 
   async function getMembership(req) {
@@ -1535,7 +1549,6 @@ export function createApp({ supabaseClientFactory = createClient, storageAdminCl
       if (['entity.parse.failed', 'request.aborted', 'request.size.invalid'].includes(err?.type)) {
         return res.status(400).json({ error: 'O corpo binário do arquivo é inválido.' });
       }
-      console.error('professional_document_file_error', err?.type || err?.name || 'unknown');
       return res.status(500).json({ error: 'Não foi possível receber o arquivo.' });
     }
     if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Payload muito grande.' });

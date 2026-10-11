@@ -119,6 +119,25 @@ test('authenticated Supabase data client forwards the verified JWT for RLS',asyn
   }finally{await s.close()}
 });
 
+test('authenticates with an anon auth client before creating the accessToken RLS client',async()=>{
+  const factoryCalls=[];
+  const factory=(_url,_key,options)=>{
+    factoryCalls.push(options);
+    const client=mock();
+    if(options.accessToken)client.auth={getUser:()=>{throw new Error('getUser must not be called on an accessToken client')}};
+    return client;
+  };
+  const s=await startServer({},factory);
+  try{
+    const response=await request(s.baseUrl,'/encounters',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    assert.equal(factoryCalls.length,2);
+    assert.equal(Object.hasOwn(factoryCalls[0],'accessToken'),false);
+    assert.equal(typeof factoryCalls[1].accessToken,'function');
+    assert.equal(await factoryCalls[1].accessToken(),'valid');
+  }finally{await s.close()}
+});
+
 test('professional document API creates metadata only and derives expired status',async()=>{
   const s=await startServer({},null,()=>new Date('2026-10-11T12:00:00.000Z'));
   try{

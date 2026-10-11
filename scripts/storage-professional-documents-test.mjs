@@ -48,7 +48,6 @@ const documentIds = [];
 const uploadedPaths = [];
 let backendProcess;
 let backendBaseUrl;
-let backendErrorType = '';
 
 async function must(promise, label) {
   const { data, error } = await promise;
@@ -94,11 +93,7 @@ async function startBackend() {
       PORT: String(port),
       FRONTEND_ORIGIN: 'http://localhost:3000',
     },
-    stdio: ['ignore', 'ignore', 'pipe'],
-  });
-  backendProcess.stderr.on('data', (chunk) => {
-    const match = chunk.toString('utf8').match(/professional_document_file_error\s+([\w.]+)/);
-    if (match) backendErrorType = match[1];
+    stdio: 'ignore',
   });
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
@@ -205,7 +200,7 @@ async function main() {
     });
     if (backendUpload.status !== 201) {
       const failure = await backendUpload.json().catch(() => ({}));
-      throw new Error(`Upload HTTP autenticado pelo backend falhou (HTTP ${backendUpload.status}; ${String(failure.error || 'sem erro estruturado').slice(0, 120)}; tipo ${backendErrorType || 'não registrado'}).`);
+      throw new Error(`Upload HTTP autenticado pelo backend falhou (HTTP ${backendUpload.status}; ${String(failure.error || 'sem erro estruturado').slice(0, 120)}).`);
     }
     const uploadBody = await backendUpload.json();
     if (uploadBody.file?.available !== true) throw new Error('Backend não confirmou o anexo privado enviado.');
