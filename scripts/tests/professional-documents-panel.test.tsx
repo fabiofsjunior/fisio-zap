@@ -3,6 +3,7 @@ import { test } from 'node:test';
 const React = await import('react');
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { default: ProfessionalDocumentsPanel, expiryState, todayUTC } = await import('../../app/components/professional-documents-panel');
+const { default: NotificationsPanel, formatDocumentExpiryDate } = await import('../../app/components/notifications-panel');
 
 test('renders accessible professional document fields and loading state without file upload', () => {
   const markup = renderToStaticMarkup(React.createElement(ProfessionalDocumentsPanel, { organizationId: 'org-test' }));
@@ -13,6 +14,26 @@ test('renders accessible professional document fields and loading state without 
   assert.match(markup, /Data de vencimento/);
   assert.match(markup, /role="status"/);
   assert.doesNotMatch(markup, /type="file"/);
+});
+
+test('notifications panel labels document expiries as informational and starts in an accessible loading state', () => {
+  const markup = renderToStaticMarkup(React.createElement(NotificationsPanel, { organizationId: 'org-test' }));
+
+  assert.match(markup, /Documentos a vencer/);
+  assert.match(markup, /Consulta informativa · classificação UTC/);
+  assert.match(markup, /Consultando vencimentos…/);
+  assert.doesNotMatch(markup, /push|lembrete enviado/i);
+});
+
+test('formats the server UTC civil expiry date without shifting it to the local timezone', () => {
+  const previousTimezone = process.env.TZ;
+  process.env.TZ = 'America/Sao_Paulo';
+  try {
+    assert.equal(formatDocumentExpiryDate('2026-02-01'), '01/02/2026');
+  } finally {
+    if (previousTimezone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimezone;
+  }
 });
 
 test('uses UTC civil day and UTC 30-day cutoff around a UTC−3 midnight', () => {

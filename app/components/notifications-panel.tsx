@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createBrowserClient } from '@supabase/ssr';
 
 type Notification = {
@@ -15,6 +15,12 @@ type Notification = {
 
 type Filter = 'open' | 'completed' | 'all';
 type UpcomingAppointment = { id: string; starts_at: string; status: 'scheduled' | 'confirmed' | 'rescheduled' };
+type UpcomingDocument = { id: string; name: string; expires_on: string; state: 'expired' | 'soon' };
+
+export function formatDocumentExpiryDate(value: string) {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Intl.DateTimeFormat('pt-BR').format(new Date(year, month - 1, day, 12));
+}
 
 async function notificationRequest<T>(organizationId: string, path: string, options: RequestInit = {}): Promise<T> {
   const client = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
@@ -33,6 +39,9 @@ async function notificationRequest<T>(organizationId: string, path: string, opti
 export default function NotificationsPanel({ organizationId }: { organizationId: string }) {
   const [items, setItems] = useState<Notification[]>([]);
   const [upcomingAppointments, setUpcomingAppointments] = useState<UpcomingAppointment[]>([]);
+  const [upcomingDocuments, setUpcomingDocuments] = useState<UpcomingDocument[]>([]);
+  const [loadingDocuments, setLoadingDocuments] = useState(true);
+  const [documentsError, setDocumentsError] = useState('');
   const [filter, setFilter] = useState<Filter>('open');
   const [title, setTitle] = useState('');
   const [message, setMessage] = useState('');
@@ -46,18 +55,28 @@ export default function NotificationsPanel({ organizationId }: { organizationId:
   const refresh = useCallback(async () => {
     setLoading(true);
     setLoadingUpcoming(true);
-    const [tasksResult, appointmentsResult] = await Promise.allSettled([
+    setLoadingDocuments(true);
+    const [tasksResult, appointmentsResult, documentsResult] = await Promise.allSettled([
       notificationRequest<{ notifications: Notification[] }>(organizationId, '/notifications'),
       notificationRequest<{ appointments: UpcomingAppointment[] }>(organizationId, '/notifications/upcoming-appointments'),
+      notificationRequest<{ documents: UpcomingDocument[] }>(organizationId, '/notifications/upcoming-documents'),
     ]);
     const errors: string[] = [];
     if (tasksResult.status === 'fulfilled') setItems(tasksResult.value.notifications || []);
     else errors.push(tasksResult.reason instanceof Error ? tasksResult.reason.message : 'Falha ao carregar tarefas.');
     if (appointmentsResult.status === 'fulfilled') setUpcomingAppointments(appointmentsResult.value.appointments || []);
     else errors.push(appointmentsResult.reason instanceof Error ? appointmentsResult.reason.message : 'Falha ao consultar a agenda.');
+    if (documentsResult.status === 'fulfilled') {
+      setUpcomingDocuments(Array.isArray(documentsResult.value.documents) ? documentsResult.value.documents : []);
+      setDocumentsError('');
+    } else {
+      setUpcomingDocuments([]);
+      setDocumentsError(documentsResult.reason instanceof Error ? documentsResult.reason.message : 'Falha ao consultar vencimentos de documentos.');
+    }
     setError(errors.join(' '));
     setLoading(false);
     setLoadingUpcoming(false);
+    setLoadingDocuments(false);
   }, [organizationId]);
 
   useEffect(() => { void refresh(); }, [refresh]);
@@ -114,6 +133,15 @@ export default function NotificationsPanel({ organizationId }: { organizationId:
       <div className="notification-list-heading"><h3>Nas próximas 24 horas</h3><span className="muted">Da sua agenda</span></div>
       {loadingUpcoming ? <p role="status">Consultando a agenda…</p> : upcomingAppointments.length === 0 ? <p className="empty-notifications">Nenhum atendimento agendado para as próximas 24 horas.</p> : <ul className="upcoming-list">
         {upcomingAppointments.map(appointment => <li className="upcoming-item" key={appointment.id}><span>Atendimento · {appointment.status === 'confirmed' ? 'Confirmado' : appointment.status === 'rescheduled' ? 'Reagendado' : 'Agendado'}</span><time dateTime={appointment.starts_at}>{new Date(appointment.starts_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</time></li>)}
+      </ul>}
+    </div>
+    <div className="panel upcoming-documents" aria-labelledby="upcoming-documents-title">
+      <div className="notification-list-heading"><h3 id="upcoming-documents-title">Documentos a vencer</h3><span className="muted">Consulta informativa · classificação UTC</span></div>
+      {loadingDocuments ? <p role="status">Consultando vencimentos…</p> : documentsError ? <p className="documents-upcoming-error" role="alert">{documentsError}</p> : upcomingDocuments.length === 0 ? <p className="empty-notifications">Nenhum documento vencido ou com vencimento nos próximos 30 dias.</p> : <ul className="upcoming-documents-list">
+        {upcomingDocuments.map(document => <li key={document.id} className="upcoming-document-item">
+          <div className="notification-copy"><strong>{document.name}</strong><span className={`upcoming-document-state ${document.state === 'expired' ? 'is-expired' : 'is-soon'}`}>{document.state === 'expired' ? 'Vencido' : 'Vence em até 30 dias'}</span></div>
+          <time dateTime={document.expires_on}>{formatDocumentExpiryDate(document.expires_on)}</time>
+        </li>)}
       </ul>}
     </div>
     <div className="panel notification-privacy"><strong>Uso operacional</strong><p>Registre tarefas e lembretes sem incluir dados clínicos, informações de pacientes ou valores financeiros.</p></div>

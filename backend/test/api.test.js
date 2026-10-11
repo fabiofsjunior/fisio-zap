@@ -24,7 +24,7 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
     financial_entries:financialEntries,
     professional_documents:professionalDocuments,
   };
-  const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):operator==='gte'?Date.parse(row[key])>=Date.parse(value):operator==='lt'?Date.parse(row[key])<Date.parse(value):row[key]===value));
+  const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):operator==='gte'?Date.parse(row[key])>=Date.parse(value):operator==='lte'?Date.parse(row[key])<=Date.parse(value):operator==='lt'?Date.parse(row[key])<Date.parse(value):row[key]===value));
   return {
     calls,queries,
     auth:{getUser:async token=>token==='valid'?{data:{user},error:null}:{data:{user:null},error:new Error('invalid token')}},
@@ -39,6 +39,7 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
         eq(k,v){state.filters.push([k,v,'eq']);return api},
         in(k,values){state.filters.push([k,values,'in']);return api},
         gte(k,v){state.filters.push([k,v,'gte']);return api},
+        lte(k,v){state.filters.push([k,v,'lte']);return api},
         lt(k,v){state.filters.push([k,v,'lt']);return api},
         ilike(){return api},
         order(key,{ascending=true}={}){state.orderBy.push({key,ascending});return api},
@@ -127,6 +128,41 @@ test('professional documents are scoped to the signed-in professional; org manag
     const managed=await request(owner.baseUrl,'/professional-documents',{headers:{Authorization:'Bearer valid'}});
     assert.deepEqual((await managed.json()).documents.map(item=>item.id),[own.id,peer.id]);
   }finally{await professional.close();await owner.close()}
+});
+
+test('document expiry alerts include only own active documents through 30 UTC days with a minimal payload',async()=>{
+  const organization='22222222-2222-4222-8222-222222222222';
+  const own=(id,expires_on,status='active',professional_id='11111111-1111-4111-8111-111111111111')=>({id,organization_id:organization,professional_id,name:'CREFITO',document_type:'registration',reference:'sensitive-ref',expires_on,status});
+  const docs=[
+    own('00000000-0000-4000-8000-000000000001','2026-10-10'),
+    own('00000000-0000-4000-8000-000000000002','2026-10-11'),
+    own('00000000-0000-4000-8000-000000000003','2026-11-10'),
+    own('00000000-0000-4000-8000-000000000004','2026-11-11'),
+    own('00000000-0000-4000-8000-000000000005','2026-10-20','archived'),
+    own('00000000-0000-4000-8000-000000000006','2026-10-20','active','55555555-5555-4555-8555-555555555555'),
+    {...own('00000000-0000-4000-8000-000000000007','2026-10-20'),organization_id:'99999999-9999-4999-8999-999999999999'},
+  ];
+  const s=await startServer({membership:{organization_id:organization,role:'owner'},professionalDocuments:docs},null,()=>new Date('2026-10-11T23:59:59.000Z'));
+  try{
+    const response=await request(s.baseUrl,'/notifications/upcoming-documents',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.deepEqual(body.documents.map(({id,state})=>({id,state})),[
+      {id:docs[0].id,state:'expired'},
+      {id:docs[1].id,state:'soon'},
+      {id:docs[2].id,state:'soon'},
+    ]);
+    assert.deepEqual(Object.keys(body.documents[0]).sort(),['id','name','expires_on','state'].sort());
+    const queries=s.database.queries.filter(query=>query.table==='professional_documents');
+    assert.equal(queries.length,2);
+    for(const query of queries){
+      assert.equal(query.operation,'select');
+      assert.equal(query.filters.some(([key,value])=>key==='professional_id'&&value==='11111111-1111-4111-8111-111111111111'),true);
+      assert.equal(query.filters.some(([key,value])=>key==='organization_id'&&value===organization),true);
+      assert.equal(query.filters.some(([key,value])=>key==='status'&&value==='active'),true);
+      assert.equal(query.limit,50);
+    }
+  }finally{await s.close()}
 });
 
 test('professional document updates allow archive and reject unsupported fields or invalid dates',async()=>{
