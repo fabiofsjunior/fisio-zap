@@ -1,5 +1,5 @@
 begin;
-select plan(19);
+select plan(20);
 
 select ok(
   (select not public from storage.buckets where id = 'professional-documents'),
@@ -135,9 +135,10 @@ select lives_ok(
   'update request cannot overwrite an object without an UPDATE policy'
 );
 
-select lives_ok(
+select throws_ok(
   $$delete from storage.objects where bucket_id = 'professional-documents'$$,
-  'delete request cannot remove an object without a DELETE policy'
+  '42501', null,
+  'direct delete request is blocked by Storage protection'
 );
 
 reset role;
@@ -167,9 +168,19 @@ set local role authenticated;
 select set_config('request.jwt.claim.sub', 'f9300000-0000-4000-8000-000000000005', true);
 
 select is(
-  (select count(*)::integer from storage.objects where bucket_id = 'professional-documents'),
+  (select count(*)::integer from storage.objects
+    where bucket_id = 'professional-documents'
+      and name = 'f9400000-0000-4000-8000-000000000002/f9500000-0000-4000-8000-000000000003'),
+  1,
+  'the other organization professional can read their own file'
+);
+
+select is(
+  (select count(*)::integer from storage.objects
+    where bucket_id = 'professional-documents'
+      and name like 'f9400000-0000-4000-8000-000000000001/%'),
   0,
-  'a user from another organization cannot read these files'
+  'a user from another organization cannot read this organization files'
 );
 
 select * from finish();
