@@ -8,9 +8,10 @@ process.env.SUPABASE_SERVICE_ROLE_KEY='test-service-role-secret';
 const {createApp}=await import('../src/index.js');
 const {getTranscriptionConfig,transcribeWithOpenAI}=await import('../src/chat-transcription.js');
 
-function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],professionalDocuments=[],operationErrors={},selectCountOverrides={},storageErrors={},storedFiles=new Map()}={}){
+function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],professionalDocuments=[],teamMembers=[],rpcError=null,operationErrors={},selectCountOverrides={},storageErrors={},storedFiles=new Map()}={}){
   const memberRows=(memberships??[membership]).map(row=>({...row,user_id:row.user_id??user.id}));
   const calls=[];
+  const rpcCalls=[];
   const queries=[];
   const storageCalls=[];
   const rowsByTable={
@@ -28,7 +29,8 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
   };
   const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):operator==='gte'?Date.parse(row[key])>=Date.parse(value):operator==='lte'?Date.parse(row[key])<=Date.parse(value):operator==='lt'?Date.parse(row[key])<Date.parse(value):row[key]===value));
   return {
-    calls,queries,storageCalls,storedFiles,
+    calls,rpcCalls,queries,storageCalls,storedFiles,
+    rpc:async(name,args)=>{rpcCalls.push({name,args});return rpcError?{data:null,error:rpcError}:{data:teamMembers,error:null}},
     auth:{getUser:async token=>token==='valid'?{data:{user},error:null}:{data:{user:null},error:new Error('invalid token')}},
     storage:{from(bucket){return {
       upload:async(path,body,options)=>{
@@ -337,6 +339,47 @@ test('multiple memberships require an explicit authorized organization selection
     const unauthorized=await request(s.baseUrl,'/encounters',{headers:{...headers,'X-FisioZap-Organization-Id':'55555555-5555-4555-8555-555555555555'}});
     assert.equal(unauthorized.status,403);
   }finally{await s.close()}
+});
+
+test('team directory requires owner or coordinator and scopes RPC to selected membership',async()=>{
+  const org='22222222-2222-4222-8222-222222222222';
+  const foreign='44444444-4444-4444-8444-444444444444';
+  const teamMembers=Array.from({length:203},(_,index)=>({
+    user_id:`${String(index+1).padStart(8,'0')}-1111-4111-8111-111111111111`,
+    display_name:`Pessoa ${String(index+1).padStart(3,'0')}`,
+    role:'professional',email:'private@example.com',organization_id:foreign,
+  }));
+  const memberships=[{organization_id:org,role:'owner'},{organization_id:foreign,role:'coordinator'}];
+  const s=await startServer({memberships,teamMembers});
+  const headers={Authorization:'Bearer valid'};
+  try{
+    assert.equal((await request(s.baseUrl,'/team/members',{headers})).status,409);
+    assert.equal((await request(s.baseUrl,'/team/members')).status,401);
+    assert.equal((await request(s.baseUrl,'/team/members',{headers:{...headers,'X-FisioZap-Organization-Id':'55555555-5555-4555-8555-555555555555'}})).status,403);
+    const response=await request(s.baseUrl,'/team/members',{headers:{...headers,'X-FisioZap-Organization-Id':org}});
+    assert.equal(response.status,200);
+    const body=await response.json();
+    assert.equal(body.members.length,200);
+    assert.deepEqual(Object.keys(body.members[0]).sort(),['display_name','role','user_id']);
+    assert.equal(body.members[0].display_name,'Pessoa 001');
+    assert.equal(body.members.at(-1).display_name,'Pessoa 200');
+    assert.deepEqual(s.database.rpcCalls,[{name:'s10_team_directory',args:{target_org:org}}]);
+  }finally{await s.close()}
+});
+
+test('team directory rejects professional roles and hides RPC errors',async()=>{
+  const denied=await startServer({membership:{organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'}});
+  try{
+    assert.equal((await request(denied.baseUrl,'/team/members',{headers:{Authorization:'Bearer valid'}})).status,403);
+    assert.equal(denied.database.rpcCalls.length,0);
+  }finally{await denied.close()}
+  const failed=await startServer({membership:{organization_id:'22222222-2222-4222-8222-222222222222',role:'coordinator'},rpcError:{message:'private database details'}});
+  try{
+    const response=await request(failed.baseUrl,'/team/members',{headers:{Authorization:'Bearer valid'}});
+    assert.equal(response.status,500);
+    const body=await response.text();
+    assert.equal(body.includes('private database details'),false);
+  }finally{await failed.close()}
 });
 
 test('CORS permits the organization selector header',async()=>{

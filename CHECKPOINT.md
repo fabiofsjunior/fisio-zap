@@ -1,5 +1,10 @@
 # FisioZap — Checkpoint global para agentes
 
+## Sprint S10.1 — 12/10/2026
+- Base remota `TESTES`: merge `05e4dbe22689eca39890d8aca2820ef2c1bc7f56` da PR #45, CI da PR #197 e pós-merge #198 aprovados 4/4. `main` permanece `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`.
+- S10.1 em `feature/s10-team-directory`, issue #46: diretório somente leitura de equipe para owner/coordinator, com retorno mínimo e isolamento por organização. Veja `docs/S10-DIRETORIO-EQUIPE.md`.
+- Migrations S9/S10 não foram aplicadas ao Supabase remoto. Issues #40/#42/#44/#46 aguardam homologação funcional do proprietário; não promover para `main`.
+
 ## Sprint S9.3 — 11/10/2026
 - Base remota `TESTES`: merge `f58441b06ff30c04a5cb3b965a51002a011466fe` da PR #43, CI da PR #192 e pós-merge #193 aprovados 4/4. `main` segue `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`.
 - S9.3 em `feature/s9-private-document-files`, issue #44: anexo único privado PDF/JPEG/PNG até 5 MiB, leitura com JWT e gravação validada pelo backend, bucket e policy SELECT por documento; integração real no CI local. Veja `docs/S9-ARQUIVOS-PRIVADOS.md`.
