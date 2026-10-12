@@ -606,8 +606,8 @@ O MVP funcional do produto deve priorizar:
 | S7 | Assistente IA | S7.1–S7.3 integradas em `TESTES`; S7.4 adiciona transcrição opcional com consentimento e revisão, issue #34; sem interpretação de documentos; homologação local pendente |
 | S8 | WhatsApp externo | pendente de reavaliação: proprietário escolheu interação pelo Chat do próprio app Android, sem conexão externa nesta entrega |
 | S9 | Documentos/integrações | S9.1–S9.3 integradas em `TESTES`; issues #40/#42/#44 abertas para homologação |
-| S10 | Clínicas/equipes | S10.1 integrada em `TESTES`; S10.2: papéis controlados do membro existente em implementação, issues #46/#48 abertas para homologação |
-| S11 | Aplicativo móvel | S11.1 em implementação: APK Android com Chat existente; issue #36 aberta para homologação |
+| S10 | Clínicas/equipes | S10.1–S10.2 integradas em `TESTES`; S10.3: paginação e permissão canônica de edição em implementação; issues #46/#48/#50 abertas para homologação |
+| S11 | Aplicativo móvel | S11.1 integrada em `TESTES`: APK Android com Chat existente; issues #36/#38 abertas para homologação no aparelho |
 | S12 | Escala/freemium/produção | planejada |
 
 ### Regra de avanço

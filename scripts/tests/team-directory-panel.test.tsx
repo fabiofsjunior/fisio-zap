@@ -22,6 +22,10 @@ function response(status: number, body: unknown) {
   return { status, ok: status >= 200 && status < 300, json: async () => body };
 }
 
+function teamPage(members: unknown[], next_cursor: string | null = null, can_manage_roles = false) {
+  return { members, next_cursor, can_manage_roles };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
@@ -69,7 +73,7 @@ test('mounted panel sends JWT and organization header and ignores the previous o
     const view = render(React.createElement(TeamDirectoryPanel, { organizationId: 'org-a', getAccessToken }));
     await waitFor(() => assert.equal(calls.length, 1));
     const firstHeaders = new Headers(calls[0].init?.headers);
-    assert.match(calls[0].url, /\/team\/members$/);
+    assert.match(calls[0].url, /\/team\/members\?limit=50$/);
     assert.equal(calls[0].init?.method, 'GET');
     assert.equal(firstHeaders.get('Authorization'), 'Bearer test-jwt-token');
     assert.equal(firstHeaders.get('X-FisioZap-Organization-Id'), 'org-a');
@@ -79,9 +83,9 @@ test('mounted panel sends JWT and organization header and ignores the previous o
     assert.equal(calls[0].init?.signal?.aborted, true);
     assert.equal(new Headers(calls[1].init?.headers).get('X-FisioZap-Organization-Id'), 'org-b');
 
-    await act(async () => calls[1].result.resolve(response(200, { members: [{ user_id: 'b1', display_name: 'Beatriz', role: 'professional' }] })));
+    await act(async () => calls[1].result.resolve(response(200, teamPage([{ user_id: 'b1', display_name: 'Beatriz', role: 'professional' }]))));
     assert.ok(screen.getByText('Beatriz'));
-    await act(async () => calls[0].result.resolve(response(200, { members: [{ user_id: 'a1', display_name: 'Ana antiga', role: 'owner' }] })));
+    await act(async () => calls[0].result.resolve(response(200, teamPage([{ user_id: 'a1', display_name: 'Ana antiga', role: 'owner' }]))));
     assert.ok(screen.getByText('Beatriz'));
     assert.equal(screen.queryByText('Ana antiga'), null);
   } finally {
@@ -105,16 +109,115 @@ test('mounted panel renders server access denied and request failure states', as
   }
 });
 
+test('owner role controls require server capability even when the profile role is owner', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => response(200, teamPage([{ user_id: 'u-1', display_name: 'Ana Lima', role: 'professional' }], null, false))) as unknown as typeof fetch;
+  try {
+    render(React.createElement(TeamDirectoryPanel, { organizationId: 'org-a', role: 'owner', getAccessToken: async () => 'jwt' }));
+    await screen.findByText('Ana Lima');
+    assert.equal(screen.queryByRole('combobox'), null);
+    assert.match(document.body.textContent ?? '', /Lista somente para consulta/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('load more follows cursor order, removes duplicate users, and hides the action on the last page', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const firstCursor = '11111111-1111-4111-8111-111111111111';
+  const secondCursor = '22222222-2222-4222-8222-222222222222';
+  globalThis.fetch = (async (input, init) => {
+    calls.push({ url: String(input), init });
+    if (calls.length === 1) return response(200, teamPage([
+      { user_id: 'u-a', display_name: 'Ana', role: 'professional' },
+      { user_id: 'u-b', display_name: 'Beatriz', role: 'professional' },
+    ], firstCursor, false));
+    if (calls.length === 2) return response(200, teamPage([
+      { user_id: 'u-b', display_name: 'Beatriz duplicada', role: 'professional' },
+      { user_id: 'u-c', display_name: 'Caio', role: 'professional' },
+    ], secondCursor, false));
+    return response(200, teamPage([{ user_id: 'u-d', display_name: 'Dora', role: 'professional' }], null, false));
+  }) as typeof fetch;
+  try {
+    render(React.createElement(TeamDirectoryPanel, { organizationId: 'org-a', role: 'owner', getAccessToken: async () => 'jwt' }));
+    await screen.findByText('Ana');
+    assert.ok(screen.getByRole('button', { name: 'Carregar mais' }));
+    await act(async () => { screen.getByRole('button', { name: 'Carregar mais' }).click(); });
+    await screen.findByText('Caio');
+    assert.match(calls[0].url, /\/team\/members\?limit=50$/);
+    assert.match(calls[1].url, new RegExp(`cursor=${firstCursor}$`));
+    assert.deepEqual(Array.from(document.querySelectorAll('.team-member-details strong')).map((item) => item.textContent), ['Ana', 'Beatriz', 'Caio']);
+    assert.match(document.body.textContent ?? '', /3 pessoas carregadas/);
+    await act(async () => { screen.getByRole('button', { name: 'Carregar mais' }).click(); });
+    await screen.findByText('Dora');
+    assert.match(calls[2].url, new RegExp(`cursor=${secondCursor}$`));
+    assert.equal(screen.queryByRole('button', { name: 'Carregar mais' }), null);
+    assert.match(document.body.textContent ?? '', /4 pessoas/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('page failure retains loaded members and offers a retry', async () => {
+  const originalFetch = globalThis.fetch;
+  const cursor = '33333333-3333-4333-8333-333333333333';
+  let pageAttempts = 0;
+  globalThis.fetch = (async (input, init) => {
+    if (!String(input).includes('cursor=') && pageAttempts === 0) return response(200, teamPage([{ user_id: 'u-a', display_name: 'Ana', role: 'professional' }], cursor));
+    pageAttempts += 1;
+    if (pageAttempts === 1) return response(503, { error: 'offline' });
+    return response(200, teamPage([{ user_id: 'u-b', display_name: 'Beatriz', role: 'professional' }], null));
+  }) as typeof fetch;
+  try {
+    render(React.createElement(TeamDirectoryPanel, { organizationId: 'org-a', getAccessToken: async () => 'jwt' }));
+    await screen.findByText('Ana');
+    await act(async () => { screen.getByRole('button', { name: 'Carregar mais' }).click(); });
+    assert.ok(await screen.findByRole('alert'));
+    assert.ok(screen.getByText('Ana'));
+    assert.equal(screen.queryByText(/Nenhuma pessoa/), null);
+    await act(async () => { screen.getByRole('button', { name: 'Tentar novamente' }).click(); });
+    assert.ok(await screen.findByText('Beatriz'));
+    assert.equal(screen.queryByRole('alert'), null);
+    assert.deepEqual(Array.from(document.querySelectorAll('.team-member-details strong')).map((item) => item.textContent), ['Ana', 'Beatriz']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a stale organization response.json result cannot replace the new organization', async () => {
+  const originalFetch = globalThis.fetch;
+  const staleJson = deferred<unknown>();
+  let staleBodyPending = false;
+  globalThis.fetch = (async (_input, init) => {
+    const orgId = new Headers(init?.headers).get('X-FisioZap-Organization-Id');
+    if (orgId === 'org-a') return { status: 200, ok: true, json: () => { staleBodyPending = true; return staleJson.promise; } } as Response;
+    return response(200, teamPage([{ user_id: 'u-b', display_name: 'Beatriz', role: 'professional' }]));
+  }) as typeof fetch;
+  try {
+    const props = { organizationId: 'org-a', getAccessToken: async () => 'jwt' };
+    const view = render(React.createElement(TeamDirectoryPanel, props));
+    await waitFor(() => assert.equal(staleBodyPending, true));
+    view.rerender(React.createElement(TeamDirectoryPanel, { ...props, organizationId: 'org-b' }));
+    assert.ok(await screen.findByText('Beatriz'));
+    await act(async () => staleJson.resolve(teamPage([{ user_id: 'u-a', display_name: 'Ana antiga', role: 'owner' }])));
+    assert.ok(screen.getByText('Beatriz'));
+    assert.equal(screen.queryByText('Ana antiga'), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('owner confirms a role change with PATCH and refreshes the roster; coordinator cannot edit', async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   globalThis.fetch = (async (input, init) => {
     calls.push({ url: String(input), init });
     if (init?.method === 'PATCH') return response(200, { member: { user_id: 'u-1', role: 'coordinator' } });
-    return response(200, { members: [
+    return response(200, teamPage([
       { user_id: 'u-1', display_name: 'Ana Lima', role: calls.some((call) => call.init?.method === 'PATCH') ? 'coordinator' : 'professional' },
       { user_id: 'u-owner', display_name: 'Dona da organização', role: 'owner' },
-    ] });
+    ], null, true));
   }) as typeof fetch;
   try {
     const props = { organizationId: 'org-a', role: 'owner' as const, getAccessToken: async () => 'jwt-role-token' };
@@ -151,7 +254,7 @@ test('owner can cancel a draft and sees an announced error when the role update 
   let patchCount = 0;
   globalThis.fetch = (async (_input, init) => {
     if (init?.method === 'PATCH') { patchCount += 1; return response(503, { error: failPatch ? 'internal' : '' }); }
-    return response(200, { members: [{ user_id: 'u-1', display_name: 'Ana Lima', role: 'professional' }] });
+    return response(200, teamPage([{ user_id: 'u-1', display_name: 'Ana Lima', role: 'professional' }], null, true));
   }) as typeof fetch;
   try {
     render(React.createElement(TeamDirectoryPanel, { organizationId: 'org-a', role: 'owner', getAccessToken: async () => 'jwt' }));
@@ -180,7 +283,7 @@ test('a role response from a previous organization is ignored', async () => {
   globalThis.fetch = (async (input, init) => {
     if (init?.method === 'PATCH') { patchOrg = new Headers(init.headers).get('X-FisioZap-Organization-Id'); return patchResult.promise as Promise<Response>; }
     const orgId = new Headers(init?.headers).get('X-FisioZap-Organization-Id');
-    return response(200, { members: [{ user_id: orgId === 'org-a' ? 'u-a' : 'u-b', display_name: orgId === 'org-a' ? 'Ana Lima' : 'Beatriz', role: 'professional' }] });
+    return response(200, teamPage([{ user_id: orgId === 'org-a' ? 'u-a' : 'u-b', display_name: orgId === 'org-a' ? 'Ana Lima' : 'Beatriz', role: 'professional' }], null, true));
   }) as typeof fetch;
   try {
     const props = { organizationId: 'org-a', role: 'owner' as const, getAccessToken: async () => 'jwt' };
@@ -202,9 +305,9 @@ test('a role response from a previous organization is ignored', async () => {
   }
 });
 
-test('directory indicates when the endpoint cap of 200 members is reached', () => {
+test('directory renders the loaded count for a complete roster', () => {
   const members = Array.from({ length: 200 }, (_, index) => ({ user_id: `u-${index}`, display_name: `Pessoa ${index}`, role: 'professional' as const }));
-  assert.match(requireMarkup({ status: 'ready', members }), /Até 200 pessoas/);
+  assert.match(requireMarkup({ status: 'ready', members }), /200 pessoas/);
 });
 
 function requireMarkup(state: Parameters<typeof TeamDirectoryView>[0]['state']) {

@@ -4,6 +4,8 @@ Issue #46. Branch `feature/s10-team-directory` → `TESTES`. Homologação funci
 
 Esta etapa apresenta, em modo somente leitura, até 200 membros da organização selecionada para **owner** e **coordinator**. Cada linha mostra apenas nome de exibição, papel e identificador do usuário. O nome pode estar ausente se o membro ainda não completou o perfil. Organizações com mais de 200 membros precisarão de paginação em uma etapa futura. O diretório não apresenta e-mail, telefone, registro profissional, dados clínicos ou credenciais.
 
+A S10.3 substitui o limite da interface por páginas consultáveis e mantém o mesmo escopo de leitura. Consulte `docs/S10-PAGINACAO-EQUIPE.md` para o contrato atual e a homologação das páginas.
+
 A API exige JWT e seleciona a organização pela membership validada, inclusive quando o cabeçalho `X-FisioZap-Organization-Id` é informado. A consulta ao banco deve limitar a função de diretório a owner/coordinator e à organização solicitada; a interface só exibe o módulo para esses papéis. Professional e administrative não têm acesso nesta etapa. Convites, criação ou remoção de membros, troca de papel e atribuição de pacientes ficam fora do escopo.
 
 ## Homologação

@@ -8,7 +8,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY='test-service-role-secret';
 const {createApp}=await import('../src/index.js');
 const {getTranscriptionConfig,transcribeWithOpenAI}=await import('../src/chat-transcription.js');
 
-function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],professionalDocuments=[],teamMembers=[],rpcError=null,operationErrors={},selectCountOverrides={},storageErrors={},storedFiles=new Map()}={}){
+function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'},memberships=null,patients=[],encounters=[],evolutions=[],exercises=[],protocols=[],encounterProtocols=[],notifications=[],appointments=[],financialEntries=[],professionalDocuments=[],teamMembers=[],teamPageResult=null,teamPageError=null,teamPageCanManageRoles=null,rpcError=null,operationErrors={},selectCountOverrides={},storageErrors={},storedFiles=new Map()}={}){
   const memberRows=(memberships??[membership]).map(row=>({...row,user_id:row.user_id??user.id}));
   const calls=[];
   const rpcCalls=[];
@@ -30,7 +30,28 @@ function mock({user={id:'11111111-1111-4111-8111-111111111111'},membership={orga
   const matchingRows=(rows,filters)=>rows.filter(row=>filters.every(([key,value,operator])=>operator==='in'?value.includes(row[key]):operator==='gte'?Date.parse(row[key])>=Date.parse(value):operator==='lte'?Date.parse(row[key])<=Date.parse(value):operator==='lt'?Date.parse(row[key])<Date.parse(value):row[key]===value));
   return {
     calls,rpcCalls,queries,storageCalls,storedFiles,
-    rpc:async(name,args)=>{rpcCalls.push({name,args});return rpcError?{data:null,error:rpcError}:{data:teamMembers,error:null}},
+    rpc:async(name,args)=>{
+      rpcCalls.push({name,args});
+      if(name==='s10_team_directory_page'){
+        const error=teamPageError??rpcError;
+        if(error)return {data:null,error};
+        if(teamPageResult!==null)return {data:teamPageResult,error:null};
+        const ordered=[...teamMembers].sort((a,b)=>a.user_id.localeCompare(b.user_id));
+        const after=args.after_user?.toLowerCase();
+        const remaining=ordered.filter(row=>!after||row.user_id.toLowerCase()>after);
+        const page=remaining.slice(0,args.page_size);
+        return {data:{members:page,next_cursor:remaining.length>args.page_size?page.at(-1)?.user_id??null:null,can_manage_roles:teamPageCanManageRoles??memberRows.some(row=>row.organization_id===args.target_org&&row.role==='owner')},error:null};
+      }
+      if(name==='s10_update_member_role'){
+        if(rpcError)return {data:null,error:rpcError};
+        const row=teamMembers.find(member=>member.user_id===args.target_user);
+        if(!row)return {data:null,error:{code:'P0002',message:'not found'}};
+        if(row.role==='owner')return {data:null,error:{code:'P0001',message:'The organization owner role is immutable'}};
+        row.role=args.new_role;
+        return {data:{user_id:row.user_id,role:row.role},error:null};
+      }
+      return {data:null,error:{code:'42883',message:'unknown RPC'}};
+    },
     auth:{getUser:async token=>token==='valid'?{data:{user},error:null}:{data:{user:null},error:new Error('invalid token')}},
     storage:{from(bucket){return {
       upload:async(path,body,options)=>{
@@ -341,13 +362,13 @@ test('multiple memberships require an explicit authorized organization selection
   }finally{await s.close()}
 });
 
-test('team directory requires owner or coordinator and scopes RPC to selected membership',async()=>{
+test('team directory paginates in UUID order and scopes RPC to selected membership',async()=>{
   const org='22222222-2222-4222-8222-222222222222';
   const foreign='44444444-4444-4444-8444-444444444444';
   const teamMembers=Array.from({length:203},(_,index)=>({
     user_id:`${String(index+1).padStart(8,'0')}-1111-4111-8111-111111111111`,
-    display_name:`Pessoa ${String(index+1).padStart(3,'0')}`,
-    role:'professional',email:'private@example.com',organization_id:foreign,
+    display_name:index===0?'   ':`Pessoa ${String(203-index).padStart(3,'0')}`,
+    role:'professional',email:'private@example.com',organization_id:org,
   }));
   const memberships=[{organization_id:org,role:'owner'},{organization_id:foreign,role:'coordinator'}];
   const s=await startServer({memberships,teamMembers});
@@ -356,15 +377,72 @@ test('team directory requires owner or coordinator and scopes RPC to selected me
     assert.equal((await request(s.baseUrl,'/team/members',{headers})).status,409);
     assert.equal((await request(s.baseUrl,'/team/members')).status,401);
     assert.equal((await request(s.baseUrl,'/team/members',{headers:{...headers,'X-FisioZap-Organization-Id':'55555555-5555-4555-8555-555555555555'}})).status,403);
-    const response=await request(s.baseUrl,'/team/members',{headers:{...headers,'X-FisioZap-Organization-Id':org}});
+    const response=await request(s.baseUrl,'/team/members?limit=25',{headers:{...headers,'X-FisioZap-Organization-Id':org}});
     assert.equal(response.status,200);
     const body=await response.json();
-    assert.equal(body.members.length,200);
+    assert.equal(body.members.length,25);
     assert.deepEqual(Object.keys(body.members[0]).sort(),['display_name','role','user_id']);
-    assert.equal(body.members[0].display_name,'Pessoa 001');
-    assert.equal(body.members.at(-1).display_name,'Pessoa 200');
-    assert.deepEqual(s.database.rpcCalls,[{name:'s10_team_directory',args:{target_org:org}}]);
+    assert.equal(body.members[0].display_name,'Sem nome');
+    assert.equal(body.members[1].display_name,'Pessoa 202');
+    assert.equal(body.members.at(-1).display_name,'Pessoa 179');
+    assert.equal(body.next_cursor,teamMembers[24].user_id);
+    assert.equal(body.can_manage_roles,true);
+    assert.deepEqual(s.database.rpcCalls,[{name:'s10_team_directory_page',args:{target_org:org,after_user:null,page_size:25}}]);
+    const next=await request(s.baseUrl,`/team/members?cursor=${body.next_cursor}&limit=25`,{headers:{...headers,'X-FisioZap-Organization-Id':org}});
+    assert.equal(next.status,200);
+    const nextBody=await next.json();
+    assert.equal(nextBody.members[0].user_id,teamMembers[25].user_id);
+    assert.equal(nextBody.members[0].display_name,'Pessoa 178');
+    assert.equal(s.database.rpcCalls[1].args.after_user,body.next_cursor);
   }finally{await s.close()}
+});
+
+test('team directory validates pagination parameters and fails safely on malformed RPC pages',async()=>{
+  const org='22222222-2222-4222-8222-222222222222';
+  const headers={Authorization:'Bearer valid'};
+  for(const limit of [1,100]){
+    const s=await startServer({membership:{organization_id:org,role:'owner'}});
+    try{
+      assert.equal((await request(s.baseUrl,`/team/members?limit=${limit}`,{headers})).status,200);
+      assert.equal(s.database.rpcCalls[0].args.page_size,limit);
+    }finally{await s.close()}
+  }
+  for(const query of ['?cursor=nope','?cursor=22222222-2222-4222-8222-222222222222&cursor=22222222-2222-4222-8222-222222222222','?limit=0','?limit=01','?limit=101','?limit=1.5','?limit=1e2','?limit[]=2','?extra=1','?limit=2&limit=3']){
+    const s=await startServer({membership:{organization_id:org,role:'owner'}});
+    try{
+      const response=await request(s.baseUrl,`/team/members${query}`,{headers});
+      assert.equal(response.status,400,query);
+      assert.equal(s.database.rpcCalls.length,0,query);
+    }finally{await s.close()}
+  }
+  for(const teamPageResult of [[],{members:[],next_cursor:'invalid',can_manage_roles:true},{members:[{user_id:'bad',display_name:'x',role:'professional'}],next_cursor:null,can_manage_roles:true},{members:[{user_id:'55555555-5555-4555-8555-555555555555',display_name:'x',role:'unexpected'}],next_cursor:null,can_manage_roles:true},{members:[{user_id:'55555555-5555-4555-8555-555555555555',display_name:'x',role:'professional'}],next_cursor:'66666666-6666-4666-8666-666666666666',can_manage_roles:true},{members:[{user_id:'66666666-6666-4666-8666-666666666666',display_name:'x',role:'professional'},{user_id:'55555555-5555-4555-8555-555555555555',display_name:'y',role:'professional'}],next_cursor:null,can_manage_roles:true}]){
+    const s=await startServer({membership:{organization_id:org,role:'owner'},teamPageResult});
+    try{assert.equal((await request(s.baseUrl,'/team/members',{headers})).status,500)}finally{await s.close()}
+  }
+});
+
+test('team directory maps authorization failures and limits role capability to canonical owners',async()=>{
+  const org='22222222-2222-4222-8222-222222222222';
+  const headers={Authorization:'Bearer valid'};
+  const coordinator=await startServer({membership:{organization_id:org,role:'coordinator'},teamPageCanManageRoles:true});
+  try{
+    const response=await request(coordinator.baseUrl,'/team/members',{headers});
+    assert.equal(response.status,200);
+    assert.equal((await response.json()).can_manage_roles,false);
+    assert.equal(coordinator.database.rpcCalls[0].args.page_size,50);
+  }finally{await coordinator.close()}
+  const secondaryOwner=await startServer({membership:{organization_id:org,role:'owner'},teamPageCanManageRoles:false});
+  try{
+    const response=await request(secondaryOwner.baseUrl,'/team/members',{headers});
+    assert.equal(response.status,200);
+    assert.equal((await response.json()).can_manage_roles,false);
+  }finally{await secondaryOwner.close()}
+  const rpcDenied=await startServer({membership:{organization_id:org,role:'coordinator'},teamPageError:{code:'42501',message:'private authorization details'}});
+  try{
+    const response=await request(rpcDenied.baseUrl,'/team/members',{headers});
+    assert.equal(response.status,403);
+    assert.equal((await response.text()).includes('private authorization details'),false);
+  }finally{await rpcDenied.close()}
 });
 
 test('team role changes require an owner, selected organization, valid target, and exact role payload',async()=>{
@@ -375,7 +453,7 @@ test('team role changes require an owner, selected organization, valid target, a
   const headers={Authorization:'Bearer valid','X-FisioZap-Organization-Id':org};
   try{
     assert.equal((await request(s.baseUrl,`/team/members/${target}/role`,{method:'PATCH',headers,body:{role:'professional'}})).status,200);
-    assert.deepEqual(await (await request(s.baseUrl,`/team/members/${target}/role`,{method:'PATCH',headers,body:{role:'administrative'}})).json(),{member:{user_id:target,role:'coordinator'}});
+    assert.deepEqual(await (await request(s.baseUrl,`/team/members/${target}/role`,{method:'PATCH',headers,body:{role:'administrative'}})).json(),{member:{user_id:target,role:'administrative'}});
     assert.deepEqual(s.database.rpcCalls[0],{name:'s10_update_member_role',args:{target_org:org,target_user:target,new_role:'professional'}});
     assert.equal(JSON.stringify(s.database.rpcCalls).includes('private@example.com'),false);
     assert.equal((await request(s.baseUrl,`/team/members/${target}/role`,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{role:'professional'}})).status,409);

@@ -593,23 +593,64 @@ export function createApp({ supabaseClientFactory = createClient, storageAdminCl
     if (!['owner', 'coordinator'].includes(membership.role)) {
       return res.status(403).json({ error: 'Perfil sem acesso ao diretório da equipe.' });
     }
+    const queryKeys = Object.keys(req.query ?? {});
+    if (queryKeys.some(key => !['cursor', 'limit'].includes(key))) {
+      return res.status(400).json({ error: 'Parâmetros de paginação inválidos.' });
+    }
+    const scalarParam = (key) => {
+      const value = req.query?.[key];
+      return value === undefined || typeof value === 'string' ? value : null;
+    };
+    const cursorParam = scalarParam('cursor');
+    const limitParam = scalarParam('limit');
+    if (cursorParam === null || limitParam === null
+      || (cursorParam !== undefined && !isUuid(cursorParam))
+      || (limitParam !== undefined && !/^(?:[1-9]|[1-9][0-9]|100)$/.test(limitParam))) {
+      return res.status(400).json({ error: 'Parâmetros de paginação inválidos.' });
+    }
+    const limit = limitParam === undefined ? 50 : Number(limitParam);
     try {
-      const { data, error } = await req.supabase.rpc('s10_team_directory', {
+      const { data, error } = await req.supabase.rpc('s10_team_directory_page', {
         target_org: membership.organization_id,
+        after_user: cursorParam ?? null,
+        page_size: limit,
       });
-      if (error || !Array.isArray(data)) {
+      if (error) {
+        if (error.code === '42501') return res.status(403).json({ error: 'Operação não autorizada.' });
         return res.status(500).json({ error: 'Não foi possível consultar a equipe.' });
       }
-      const members = data
-        .filter(row => row && typeof row.user_id === 'string' && (row.display_name === null || typeof row.display_name === 'string') && typeof row.role === 'string')
-        .map(row => ({
+      if (!data || typeof data !== 'object' || Array.isArray(data)
+        || !Array.isArray(data.members)
+        || !(data.next_cursor === null || isUuid(data.next_cursor))
+        || typeof data.can_manage_roles !== 'boolean') {
+        return res.status(500).json({ error: 'Não foi possível consultar a equipe.' });
+      }
+      const members = [];
+      let previousUserId = cursorParam?.toLowerCase() ?? null;
+      for (const row of data.members) {
+        if (!row || typeof row !== 'object' || Array.isArray(row)
+          || !isUuid(row.user_id)
+          || !(row.display_name === null || typeof row.display_name === 'string')
+          || !['owner', 'coordinator', 'professional', 'administrative'].includes(row.role)
+          || (previousUserId !== null && row.user_id.toLowerCase() <= previousUserId)) {
+          return res.status(500).json({ error: 'Não foi possível consultar a equipe.' });
+        }
+        previousUserId = row.user_id.toLowerCase();
+        members.push({
           user_id: row.user_id,
-          display_name: (row.display_name ?? 'Sem nome').slice(0, 120),
+          display_name: (row.display_name?.trim() || 'Sem nome').slice(0, 120),
           role: row.role,
-        }))
-        .sort((a, b) => a.display_name.localeCompare(b.display_name) || a.user_id.localeCompare(b.user_id))
-        .slice(0, 200);
-      return res.json({ members });
+        });
+      }
+      if (members.length > limit
+        || (data.next_cursor !== null && (!members.length || data.next_cursor.toLowerCase() !== members.at(-1).user_id.toLowerCase()))) {
+        return res.status(500).json({ error: 'Não foi possível consultar a equipe.' });
+      }
+      return res.json({
+        members,
+        next_cursor: data.next_cursor,
+        can_manage_roles: membership.role === 'owner' && data.can_manage_roles,
+      });
     } catch {
       return res.status(500).json({ error: 'Não foi possível consultar a equipe.' });
     }
