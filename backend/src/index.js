@@ -614,6 +614,40 @@ export function createApp({ supabaseClientFactory = createClient, storageAdminCl
       return res.status(500).json({ error: 'Não foi possível consultar a equipe.' });
     }
   });
+  app.patch('/team/members/:userId/role', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res);
+    if (!membership) return;
+    if (membership.role !== 'owner') {
+      return res.status(403).json({ error: 'Somente o responsável pela organização pode alterar perfis.' });
+    }
+    if (!isUuid(req.params.userId)) return res.status(400).json({ error: 'Usuário inválido.' });
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).length !== 1 || !Object.hasOwn(body, 'role')
+      || !['professional', 'coordinator', 'administrative'].includes(body.role)) {
+      return res.status(422).json({ error: 'Informe um perfil válido.' });
+    }
+    try {
+      const { data, error } = await req.supabase.rpc('s10_update_member_role', {
+        target_org: membership.organization_id,
+        target_user: req.params.userId,
+        new_role: body.role,
+      });
+      if (error) {
+        if (error.code === '42501') return res.status(403).json({ error: 'Operação não autorizada.' });
+        if (error.code === 'P0001' && error.message === 'The organization owner role is immutable') return res.status(409).json({ error: 'O perfil do responsável não pode ser alterado.' });
+        if (error.code === 'P0002') return res.status(404).json({ error: 'Membro não encontrado.' });
+        return res.status(503).json({ error: 'Não foi possível atualizar o perfil do membro.' });
+      }
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row || typeof row.user_id !== 'string' || typeof row.role !== 'string') {
+        return res.status(503).json({ error: 'Não foi possível atualizar o perfil do membro.' });
+      }
+      return res.json({ member: { user_id: row.user_id, role: row.role } });
+    } catch {
+      return res.status(503).json({ error: 'Não foi possível atualizar o perfil do membro.' });
+    }
+  });
   const FINANCIAL_ENTRY_FIELDS = 'id,organization_id,professional_id,patient_id,kind,entry_type,amount,description,occurred_at,due_date,paid_at';
   async function financeScope(req, res) {
     const membership = await appointmentScope(req, res);
