@@ -367,6 +367,43 @@ test('team directory requires owner or coordinator and scopes RPC to selected me
   }finally{await s.close()}
 });
 
+test('team role changes require an owner, selected organization, valid target, and exact role payload',async()=>{
+  const org='22222222-2222-4222-8222-222222222222';
+  const target='55555555-5555-4555-8555-555555555555';
+  const memberships=[{organization_id:org,role:'owner'},{organization_id:'44444444-4444-4444-8444-444444444444',role:'owner'}];
+  const s=await startServer({memberships,teamMembers:[{user_id:target,role:'coordinator',email:'private@example.com'}]});
+  const headers={Authorization:'Bearer valid','X-FisioZap-Organization-Id':org};
+  try{
+    assert.equal((await request(s.baseUrl,`/team/members/${target}/role`,{method:'PATCH',headers,body:{role:'professional'}})).status,200);
+    assert.deepEqual(await (await request(s.baseUrl,`/team/members/${target}/role`,{method:'PATCH',headers,body:{role:'administrative'}})).json(),{member:{user_id:target,role:'coordinator'}});
+    assert.deepEqual(s.database.rpcCalls[0],{name:'s10_update_member_role',args:{target_org:org,target_user:target,new_role:'professional'}});
+    assert.equal(JSON.stringify(s.database.rpcCalls).includes('private@example.com'),false);
+    assert.equal((await request(s.baseUrl,`/team/members/${target}/role`,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{role:'professional'}})).status,409);
+    assert.equal((await request(s.baseUrl,`/team/members/${target}/role`,{method:'PATCH',headers:{...headers,'X-FisioZap-Organization-Id':'99999999-9999-4999-8999-999999999999'},body:{role:'professional'}})).status,403);
+    const denied=await startServer({membership:{organization_id:org,role:'coordinator'}});
+    try{assert.equal((await request(denied.baseUrl,`/team/members/${target}/role`,{method:'PATCH',headers:{Authorization:'Bearer valid'},body:{role:'professional'}})).status,403);assert.equal(denied.database.rpcCalls.length,0)}finally{await denied.close()}
+    assert.equal((await request(s.baseUrl,'/team/members/not-a-uuid/role',{method:'PATCH',headers,body:{role:'professional'}})).status,400);
+    for(const body of [{role:'owner'},{role:'invalid'},{role:'professional',user_id:target},{user_id:target},{role:null}]){
+      assert.equal((await request(s.baseUrl,`/team/members/${target}/role`,{method:'PATCH',headers,body})).status,422);
+    }
+    assert.equal((await request(s.baseUrl,`/team/members/${target}/role`,{method:'PATCH',body:{role:'professional'}})).status,401);
+  }finally{await s.close()}
+});
+
+test('team role change RPC errors map to safe statuses and hide provider details',async()=>{
+  const target='55555555-5555-4555-8555-555555555555';
+  const headers={Authorization:'Bearer valid'};
+  for(const [rpcError,status] of [[{code:'42501',message:'private authorization detail'},403],[{code:'P0001',message:'The organization owner role is immutable'},409],[{code:'P0002',message:'not found'},404],[{code:'XX000',message:'private database detail'},503]]){
+    const s=await startServer({membership:{organization_id:'22222222-2222-4222-8222-222222222222',role:'owner'},rpcError});
+    try{
+      const response=await request(s.baseUrl,`/team/members/${target}/role`,{method:'PATCH',headers,body:{role:'professional'}});
+      assert.equal(response.status,status);
+      const text=await response.text();
+      assert.equal(text.includes(rpcError.message),false);
+    }finally{await s.close()}
+  }
+});
+
 test('team directory rejects professional roles and hides RPC errors',async()=>{
   const denied=await startServer({membership:{organization_id:'22222222-2222-4222-8222-222222222222',role:'professional'}});
   try{

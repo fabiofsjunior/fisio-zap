@@ -105,6 +105,103 @@ test('mounted panel renders server access denied and request failure states', as
   }
 });
 
+test('owner confirms a role change with PATCH and refreshes the roster; coordinator cannot edit', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = (async (input, init) => {
+    calls.push({ url: String(input), init });
+    if (init?.method === 'PATCH') return response(200, { member: { user_id: 'u-1', role: 'coordinator' } });
+    return response(200, { members: [
+      { user_id: 'u-1', display_name: 'Ana Lima', role: calls.some((call) => call.init?.method === 'PATCH') ? 'coordinator' : 'professional' },
+      { user_id: 'u-owner', display_name: 'Dona da organização', role: 'owner' },
+    ] });
+  }) as typeof fetch;
+  try {
+    const props = { organizationId: 'org-a', role: 'owner' as const, getAccessToken: async () => 'jwt-role-token' };
+    const view = render(React.createElement(TeamDirectoryPanel, props));
+    await screen.findByText('Ana Lima');
+    assert.equal(screen.queryByRole('combobox', { name: 'Função de Dona da organização' }), null);
+    const select = screen.getByRole('combobox', { name: 'Função de Ana Lima' });
+    await act(async () => { (select as HTMLSelectElement).value = 'coordinator'; select.dispatchEvent(new dom.window.Event('change', { bubbles: true })); });
+    await act(async () => { screen.getByRole('button', { name: 'Salvar' }).click(); });
+    assert.ok(screen.getByText(/Alterar função para Coordenador/));
+    assert.equal(calls.filter((call) => call.init?.method === 'PATCH').length, 0);
+    await act(async () => { screen.getByRole('button', { name: 'Confirmar alteração' }).click(); });
+    await waitFor(() => assert.equal(calls.filter((call) => call.init?.method === 'PATCH').length, 1));
+    const patchCall = calls.find((call) => call.init?.method === 'PATCH')!;
+    assert.match(patchCall.url, /\/team\/members\/u-1\/role$/);
+    const headers = new Headers(patchCall.init?.headers);
+    assert.equal(headers.get('Authorization'), 'Bearer jwt-role-token');
+    assert.equal(headers.get('X-FisioZap-Organization-Id'), 'org-a');
+    assert.deepEqual(JSON.parse(String(patchCall.init?.body)), { role: 'coordinator' });
+    await waitFor(() => assert.equal(calls.filter((call) => call.init?.method === 'GET').length, 2));
+    await waitFor(() => assert.equal((screen.getByRole('combobox', { name: 'Função de Ana Lima' }) as HTMLSelectElement).value, 'coordinator'));
+
+    view.rerender(React.createElement(TeamDirectoryPanel, { ...props, role: 'coordinator' }));
+    await waitFor(() => assert.ok(screen.getByText('Ana Lima')));
+    assert.equal(screen.queryByRole('combobox'), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('owner can cancel a draft and sees an announced error when the role update fails', async () => {
+  const originalFetch = globalThis.fetch;
+  let failPatch = false;
+  let patchCount = 0;
+  globalThis.fetch = (async (_input, init) => {
+    if (init?.method === 'PATCH') { patchCount += 1; return response(503, { error: failPatch ? 'internal' : '' }); }
+    return response(200, { members: [{ user_id: 'u-1', display_name: 'Ana Lima', role: 'professional' }] });
+  }) as typeof fetch;
+  try {
+    render(React.createElement(TeamDirectoryPanel, { organizationId: 'org-a', role: 'owner', getAccessToken: async () => 'jwt' }));
+    await screen.findByText('Ana Lima');
+    const select = screen.getByRole('combobox', { name: 'Função de Ana Lima' }) as HTMLSelectElement;
+    await act(async () => { select.value = 'administrative'; select.dispatchEvent(new dom.window.Event('change', { bubbles: true })); });
+    await act(async () => { screen.getByRole('button', { name: 'Cancelar' }).click(); });
+    assert.equal(select.value, 'professional');
+    assert.equal(patchCount, 0);
+    await act(async () => { select.value = 'coordinator'; select.dispatchEvent(new dom.window.Event('change', { bubbles: true })); });
+    await act(async () => { screen.getByRole('button', { name: 'Salvar' }).click(); });
+    failPatch = true;
+    await act(async () => { screen.getByRole('button', { name: 'Confirmar alteração' }).click(); });
+    assert.ok(await screen.findByRole('alert'));
+    assert.equal((screen.getByRole('combobox', { name: 'Função de Ana Lima' }) as HTMLSelectElement).value, 'coordinator');
+    assert.equal(patchCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a role response from a previous organization is ignored', async () => {
+  const originalFetch = globalThis.fetch;
+  const patchResult = deferred<ReturnType<typeof response>>();
+  let patchOrg: string | null = null;
+  globalThis.fetch = (async (input, init) => {
+    if (init?.method === 'PATCH') { patchOrg = new Headers(init.headers).get('X-FisioZap-Organization-Id'); return patchResult.promise as Promise<Response>; }
+    const orgId = new Headers(init?.headers).get('X-FisioZap-Organization-Id');
+    return response(200, { members: [{ user_id: orgId === 'org-a' ? 'u-a' : 'u-b', display_name: orgId === 'org-a' ? 'Ana Lima' : 'Beatriz', role: 'professional' }] });
+  }) as typeof fetch;
+  try {
+    const props = { organizationId: 'org-a', role: 'owner' as const, getAccessToken: async () => 'jwt' };
+    const view = render(React.createElement(TeamDirectoryPanel, props));
+    await screen.findByText('Ana Lima');
+    const select = screen.getByRole('combobox', { name: 'Função de Ana Lima' }) as HTMLSelectElement;
+    await act(async () => { select.value = 'coordinator'; select.dispatchEvent(new dom.window.Event('change', { bubbles: true })); });
+    await act(async () => { screen.getByRole('button', { name: 'Salvar' }).click(); });
+    await act(async () => { screen.getByRole('button', { name: 'Confirmar alteração' }).click(); });
+    await waitFor(() => assert.equal(patchOrg, 'org-a'));
+    view.rerender(React.createElement(TeamDirectoryPanel, { ...props, organizationId: 'org-b' }));
+    await screen.findByText('Beatriz');
+    await act(async () => patchResult.resolve(response(503, { error: 'old organization error' })));
+    assert.ok(screen.getByText('Beatriz'));
+    assert.equal(screen.queryByRole('alert'), null);
+    assert.equal(screen.queryByText('Ana Lima'), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('directory indicates when the endpoint cap of 200 members is reached', () => {
   const members = Array.from({ length: 200 }, (_, index) => ({ user_id: `u-${index}`, display_name: `Pessoa ${index}`, role: 'professional' as const }));
   assert.match(requireMarkup({ status: 'ready', members }), /Até 200 pessoas/);

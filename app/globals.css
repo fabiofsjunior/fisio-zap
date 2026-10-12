@@ -115,6 +115,12 @@ button:disabled{cursor:wait;opacity:.7}
 .team-member-details{display:grid;gap:4px;min-width:0}
 .team-member-details strong{overflow-wrap:anywhere;font-size:14px}
 .team-member-details span{color:#69756e;font-size:12px}
+.team-role-edit{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-left:auto}
+.team-role-edit label{color:#69756e;font-size:11px}
+.team-role-edit select,.team-role-edit button{min-height:36px;border:1px solid #d5ddd8;border-radius:9px;background:#fff;color:#244637;padding:7px 10px;font:inherit;font-size:12px}
+.team-role-edit button{cursor:pointer;font-weight:700}
+.team-role-edit button:disabled,.team-role-edit select:disabled{opacity:.6;cursor:wait}
+.team-role-edit [role="status"]{flex-basis:100%;color:#684d19;font-size:12px;text-align:right}
 .team-state{display:grid;gap:6px;margin:0;padding:22px 14px;border:1px dashed #d5ddd8;border-radius:14px;background:#fafbf9;color:#59665e;text-align:center;font-size:14px;line-height:1.5}
 .team-state-error{border-style:solid;border-color:#ead5a0;background:#fff9ed;color:#684d19}
 .team-privacy-note{margin:14px 0 0;color:#7a857e;font-size:12px;line-height:1.45}

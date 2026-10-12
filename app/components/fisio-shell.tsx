@@ -367,7 +367,7 @@ export default function FisioShell({ email, role, organizationId, userId }: { em
     if (activeModule === 'Notificações') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><NotificationsPanel organizationId={organizationId} /></>;
     if (activeModule === 'Financeiro') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><FinancialPanel organizationId={organizationId} /></>;
     if (activeModule === 'Documentos profissionais') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><ProfessionalDocumentsPanel organizationId={organizationId} /></>;
-    if (activeModule === 'Equipe') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><TeamDirectoryPanel organizationId={organizationId} /></>;
+    if (activeModule === 'Equipe') return <><button type="button" className="back-button" onClick={() => setActiveModule(null)}>← Voltar ao painel</button><TeamDirectoryPanel organizationId={organizationId} role={role} /></>;
     if (activeModule === 'Evoluções' || activeModule === 'Exercícios e protocolos') return <ClinicalPanel organizationId={organizationId} userId={userId} canManageClinicalRecords={canManageClinicalRecords} onClose={() => setActiveModule(null)} />;
     const [, title, description] = active;
     const actions: Record<string, string[]> = {

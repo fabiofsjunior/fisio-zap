@@ -1,5 +1,10 @@
 # FisioZap — Checkpoint global para agentes
 
+## Sprint S10.2 — 12/10/2026
+- Base remota `TESTES`: merge `3b8aaca443fcfdbf851d302965069500e966e4be` da PR #47; CI da PR #199 e pós-merge #200 aprovados 4/4. `main` permanece `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`.
+- S10.2 em `feature/s10-member-roles`, issue #48: owner altera o papel de membros existentes entre professional/coordinator/administrative; owner imutável. Veja `docs/S10-PAPEIS-EQUIPE.md`.
+- Migrations S9/S10 continuam sem aplicação em banco remoto. Issues #40/#42/#44/#46/#48 aguardam homologação funcional do proprietário; sem promoção para `main`.
+
 ## Sprint S10.1 — 12/10/2026
 - Base remota `TESTES`: merge `05e4dbe22689eca39890d8aca2820ef2c1bc7f56` da PR #45, CI da PR #197 e pós-merge #198 aprovados 4/4. `main` permanece `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`.
 - S10.1 em `feature/s10-team-directory`, issue #46: diretório somente leitura de equipe para owner/coordinator, com retorno mínimo e isolamento por organização. Veja `docs/S10-DIRETORIO-EQUIPE.md`.
