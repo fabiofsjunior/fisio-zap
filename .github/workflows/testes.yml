@@ -23,6 +23,7 @@ jobs:
       - run: node --test scripts/tests/*.test.mjs
       - run: npm run test:chat-composer
       - run: npm run test:professional-documents
+      - run: npm run test:team-directory
       - run: npm run build
       - run: npm run test:agenda-day-range
 

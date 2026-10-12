@@ -587,6 +587,33 @@ export function createApp({ supabaseClientFactory = createClient, storageAdminCl
     if (!membership) { rejectMembership(req, res); return null; }
     return membership;
   }
+  app.get('/team/members', rateLimit, requireAuth, async (req, res) => {
+    const membership = await appointmentScope(req, res);
+    if (!membership) return;
+    if (!['owner', 'coordinator'].includes(membership.role)) {
+      return res.status(403).json({ error: 'Perfil sem acesso ao diretório da equipe.' });
+    }
+    try {
+      const { data, error } = await req.supabase.rpc('s10_team_directory', {
+        target_org: membership.organization_id,
+      });
+      if (error || !Array.isArray(data)) {
+        return res.status(500).json({ error: 'Não foi possível consultar a equipe.' });
+      }
+      const members = data
+        .filter(row => row && typeof row.user_id === 'string' && (row.display_name === null || typeof row.display_name === 'string') && typeof row.role === 'string')
+        .map(row => ({
+          user_id: row.user_id,
+          display_name: (row.display_name ?? 'Sem nome').slice(0, 120),
+          role: row.role,
+        }))
+        .sort((a, b) => a.display_name.localeCompare(b.display_name) || a.user_id.localeCompare(b.user_id))
+        .slice(0, 200);
+      return res.json({ members });
+    } catch {
+      return res.status(500).json({ error: 'Não foi possível consultar a equipe.' });
+    }
+  });
   const FINANCIAL_ENTRY_FIELDS = 'id,organization_id,professional_id,patient_id,kind,entry_type,amount,description,occurred_at,due_date,paid_at';
   async function financeScope(req, res) {
     const membership = await appointmentScope(req, res);
