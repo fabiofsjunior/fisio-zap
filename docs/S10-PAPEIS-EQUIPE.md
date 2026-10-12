@@ -6,7 +6,7 @@ O owner pode alterar o papel de um membro **existente** da própria organizaçã
 
 O papel owner não pode ser atribuído, rebaixado ou removido nesta etapa. A transferência de propriedade exigirá um fluxo próprio para manter `organizations.owner_id` coerente. Convites, exclusão de membros, dados de contato, acesso clínico e reassociação de pacientes não fazem parte desta entrega. A lista atual mostra até 200 membros; equipes maiores precisarão de paginação para gerenciar todos.
 
-A alteração exige que o solicitante seja o proprietário canônico (`organizations.owner_id`) e tenha vínculo `owner`. Se houver outro vínculo com papel `owner` na organização, ele verá o controle de edição mas receberá autorização negada ao salvar; a reconciliação de proprietários adicionais fica para o fluxo de propriedade.
+A alteração exige que o solicitante seja o proprietário canônico (`organizations.owner_id`) e tenha vínculo `owner`. A S10.3 alinha os controles da interface a essa autorização e permite consultar todos os membros por páginas; veja `docs/S10-PAGINACAO-EQUIPE.md`. A transferência de propriedade permanece fora do escopo.
 
 ## Homologação
 

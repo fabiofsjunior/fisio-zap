@@ -1,5 +1,11 @@
 # FisioZap — Checkpoint global para agentes
 
+## Sprint S10.3 — 12/10/2026
+- Estado remoto reinspecionado: `TESTES` em `e7ff6fe9bc698d99a932ff2fc6c6e589ce910d6a`, PR #49 integrada, CI da PR #201 e pós-merge #202 aprovados 4/4; nenhuma PR aberta no início. `main` permanece `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`.
+- S10.3 em `feature/s10-team-pagination`, issue #50: páginas limitadas por cursor e controles de função alinhados ao proprietário canônico. Contrato e homologação em `docs/S10-PAGINACAO-EQUIPE.md`.
+- Verificação local: backend 95/95, interface de equipe 13/13, build web e syntax/diff check aprovados; revisões independentes QA e Segurança sem bloqueios. PgTAP com 30 assertions inclui 211 membros e três páginas sem perda ou duplicação; execução SQL/replay/lint aguardam o Supabase local do CI porque CLI/Docker não estão disponíveis neste executor.
+- Issues #46/#48/#50 continuam abertas para homologação. Migrations apenas em testes locais/CI, sem aplicação em banco remoto.
+
 ## Sprint S10.2 — 12/10/2026
 - Base remota `TESTES`: merge `3b8aaca443fcfdbf851d302965069500e966e4be` da PR #47; CI da PR #199 e pós-merge #200 aprovados 4/4. `main` permanece `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`.
 - S10.2 em `feature/s10-member-roles`, issue #48: owner altera o papel de membros existentes entre professional/coordinator/administrative; owner imutável. Veja `docs/S10-PAPEIS-EQUIPE.md`.
