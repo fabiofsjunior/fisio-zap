@@ -10,6 +10,15 @@ class UrlPolicyTest {
     private val appUrl = "https://fisiozap.example/app/"
 
     @Test
+    fun keepsDefaultDebugLoginOnItsTrustedHttpsOrigin() {
+        val defaultDebugUrl = "https://oxygen-nag-jolly.ngrok-free.dev/login"
+        assertTrue(UrlPolicy.isAllowedInWebView(defaultDebugUrl, defaultDebugUrl))
+        assertTrue(UrlPolicy.isAllowedInWebView("https://oxygen-nag-jolly.ngrok-free.dev/patients", defaultDebugUrl))
+        assertFalse(UrlPolicy.isAllowedInWebView("https://other.ngrok-free.dev/login", defaultDebugUrl))
+        assertFalse(UrlPolicy.isAllowedInWebView("http://oxygen-nag-jolly.ngrok-free.dev/login", defaultDebugUrl))
+    }
+
+    @Test
     fun allowsExactHttpsOriginAcrossApplicationPathsQueriesAndFragments() {
         assertTrue(UrlPolicy.isAllowedInWebView("https://fisiozap.example/login", appUrl))
         assertTrue(UrlPolicy.isAllowedInWebView("https://FISIOZAP.EXAMPLE:443/panel?tab=chat#composer", appUrl))

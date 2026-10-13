@@ -21,6 +21,7 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
@@ -43,6 +44,7 @@ class MainActivity : ComponentActivity() {
     private var offlineView: View? = null
     private var currentUrl: String? = null
     private var attachmentBridgeReady = false
+    @Volatile private var webViewActive = false
 
     private val microphonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         pendingMicrophoneResult?.invoke(granted)
@@ -101,11 +103,13 @@ class MainActivity : ComponentActivity() {
             showGenericError("Endereço HTTPS inválido.")
             return
         }
+        disposeWebViewIfNeeded()
         currentUrl = validated
         trustedOrigin = originUri(validated)
-        webView = WebView(this)
-        configureWebView(webView)
-        mediaPermissions = MediaPermissions(this, webView, trustedOrigin) { callback ->
+        val newWebView = WebView(this)
+        webView = newWebView
+        configureWebView(newWebView)
+        mediaPermissions = MediaPermissions(this, newWebView, trustedOrigin) { callback ->
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                 callback(true)
             } else {
@@ -114,24 +118,29 @@ class MainActivity : ComponentActivity() {
             }
         }
         fileChooser = FileChooser(this, trustedOrigin) { intent -> openDocument.launch(intent) }
-        attachmentDownloads = AttachmentDownloads(this, webView, trustedOrigin) { intent -> createDocument.launch(intent) }
+        attachmentDownloads = AttachmentDownloads(this, newWebView, trustedOrigin) { intent -> createDocument.launch(intent) }
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: android.webkit.PermissionRequest) {
-                mediaPermissions.onPermissionRequest(request)
+                if (isCurrentWebView(newWebView)) mediaPermissions.onPermissionRequest(request) else request.deny()
             }
 
             override fun onPermissionRequestCanceled(request: android.webkit.PermissionRequest) {
-                mediaPermissions.onPermissionRequestCanceled(request)
+                if (isCurrentWebView(newWebView)) mediaPermissions.onPermissionRequestCanceled(request)
             }
 
             override fun onShowFileChooser(
                 view: WebView,
                 filePathCallback: android.webkit.ValueCallback<Array<Uri>>,
                 fileChooserParams: FileChooserParams,
-            ): Boolean = fileChooser.onShowFileChooser(view, filePathCallback, fileChooserParams)
+            ): Boolean {
+                if (isCurrentWebView(newWebView)) return fileChooser.onShowFileChooser(view, filePathCallback, fileChooserParams)
+                filePathCallback.onReceiveValue(null)
+                return true
+            }
         }
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                if (!isCurrentWebView(view)) return true
                 val url = request.url.toString()
                 if (!request.isForMainFrame) {
                     return !UrlPolicy.isAllowedInWebView(url, trustedOrigin.toString())
@@ -140,9 +149,12 @@ class MainActivity : ComponentActivity() {
             }
 
             @Suppress("DEPRECATION")
-            override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean = handleNavigation(url, false)
+            override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
+                return !isCurrentWebView(view) || handleNavigation(url, false)
+            }
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                if (!isCurrentWebView(view)) return
                 if (!UrlPolicy.isAllowedInWebView(url, trustedOrigin.toString())) {
                     notifyNavigation(url)
                     view.stopLoading()
@@ -153,22 +165,17 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                if (!isCurrentWebView(view)) return blockedNavigationResponse()
                 if (request.isForMainFrame && !UrlPolicy.isAllowedInWebView(request.url.toString(), trustedOrigin.toString())) {
                     notifyNavigation(request.url.toString())
-                    runOnUiThread { showOfflineView() }
-                    return WebResourceResponse(
-                        "text/plain",
-                        "UTF-8",
-                        403,
-                        "Blocked",
-                        mapOf("Cache-Control" to "no-store"),
-                        ByteArrayInputStream(ByteArray(0)),
-                    )
+                    runOnUiThread { if (isCurrentWebView(view)) showOfflineView() }
+                    return blockedNavigationResponse()
                 }
                 return null
             }
 
             override fun onPageFinished(view: WebView, url: String) {
+                if (!isCurrentWebView(view)) return
                 if (UrlPolicy.isAllowedInWebView(url, trustedOrigin.toString())) {
                     hideOfflineView()
                     if (attachmentBridgeReady) {
@@ -179,22 +186,24 @@ class MainActivity : ComponentActivity() {
 
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
                 handler.cancel()
-                showOfflineView()
+                if (isCurrentWebView(view)) showOfflineView()
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) showOfflineView()
+                if (isCurrentWebView(view) && request.isForMainFrame) showOfflineView()
             }
         }
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
-            setAcceptThirdPartyCookies(webView, false)
+            setAcceptThirdPartyCookies(newWebView, false)
         }
         root.removeAllViews()
-        root.addView(webView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        if (BuildConfig.DEBUG) addDebugRecoveryMenu()
+        root.addView(newWebView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
         attachmentBridgeReady = attachmentDownloads.installClickInterceptor()
-        webView.loadUrl(validated)
+        webViewActive = true
+        newWebView.loadUrl(validated)
     }
 
     private fun configureWebView(view: WebView) {
@@ -215,6 +224,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleNavigation(rawUrl: String, hasUserGesture: Boolean): Boolean {
+        if (!webViewActive) return true
         if (::trustedOrigin.isInitialized && UrlPolicy.isAllowedInWebView(rawUrl, trustedOrigin.toString())) return false
         val externalUrl = UrlPolicy.externalBrowserUrl(rawUrl) ?: return true
         if (!hasUserGesture) return true
@@ -234,6 +244,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showSetupScreen() {
+        disposeWebViewIfNeeded()
         root.removeAllViews()
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -279,8 +290,60 @@ class MainActivity : ComponentActivity() {
         root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
 
+    private fun addDebugRecoveryMenu() {
+        val menuButton = Button(this).apply {
+            text = "⋮"
+            contentDescription = "Menu de recuperação do endereço"
+            minWidth = dp(48)
+            setOnClickListener { anchor ->
+                PopupMenu(this@MainActivity, anchor).apply {
+                    menu.add("Alterar endereço do aplicativo")
+                    setOnMenuItemClickListener {
+                        showSetupScreen()
+                        true
+                    }
+                }.show()
+            }
+        }
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.WHITE)
+            addView(menuButton, LinearLayout.LayoutParams(dp(56), dp(48)))
+        }
+        root.addView(toolbar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
+    }
+
+    private fun disposeWebViewIfNeeded() {
+        if (!webViewActive || !::webView.isInitialized) return
+        webViewActive = false
+        if (::mediaPermissions.isInitialized) mediaPermissions.close()
+        if (::fileChooser.isInitialized) fileChooser.close()
+        if (::attachmentDownloads.isInitialized) attachmentDownloads.close()
+        root.removeView(webView)
+        webView.stopLoading()
+        webView.webChromeClient = null
+        webView.webViewClient = WebViewClient()
+        webView.destroy()
+        offlineView?.let(root::removeView)
+        offlineView = null
+        attachmentBridgeReady = false
+    }
+
+    private fun isCurrentWebView(view: WebView): Boolean =
+        webViewActive && ::webView.isInitialized && view === webView
+
+    private fun blockedNavigationResponse() = WebResourceResponse(
+        "text/plain",
+        "UTF-8",
+        403,
+        "Blocked",
+        mapOf("Cache-Control" to "no-store"),
+        ByteArrayInputStream(ByteArray(0)),
+    )
+
     private fun showOfflineView() {
-        if (offlineView != null || !::root.isInitialized) return
+        if (!webViewActive || offlineView != null || !::root.isInitialized) return
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = android.view.Gravity.CENTER
@@ -295,7 +358,9 @@ class MainActivity : ComponentActivity() {
         })
         panel.addView(Button(this).apply {
             text = "Tentar novamente"
-            setOnClickListener { currentUrl?.let(webView::loadUrl) }
+            setOnClickListener {
+                if (webViewActive) currentUrl?.let { url -> webView.loadUrl(url) }
+            }
         })
         offlineView = panel
         root.addView(panel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -319,7 +384,7 @@ class MainActivity : ComponentActivity() {
     private fun configureBackButton() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (::webView.isInitialized && webView.canGoBack()) {
+                if (webViewActive && ::webView.isInitialized && webView.canGoBack()) {
                     webView.goBack()
                 } else {
                     finish()
@@ -329,16 +394,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        if (::mediaPermissions.isInitialized) mediaPermissions.close()
-        if (::fileChooser.isInitialized) fileChooser.close()
-        if (::attachmentDownloads.isInitialized) attachmentDownloads.close()
-        if (::webView.isInitialized) {
-            root.removeView(webView)
-            webView.stopLoading()
-            webView.webChromeClient = null
-            webView.webViewClient = WebViewClient()
-            webView.destroy()
-        }
+        disposeWebViewIfNeeded()
         super.onDestroy()
     }
 

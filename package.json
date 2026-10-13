@@ -14,6 +14,8 @@
     "test:team-directory": "node --import tsx --test scripts/tests/team-directory-panel.test.tsx",
     "bootstrap:test-accounts": "node --env-file=.env.local scripts/bootstrap-test-accounts.mjs",
     "test:smoke": "node --env-file=.env.local scripts/smoke-test.mjs",
+    "test:smoke:tunnel": "node --env-file=.env.local scripts/smoke-test.mjs --tunnel",
+    "test:smoke:helpers": "node --test scripts/tests/smoke-test-config.test.mjs",
     "test:rls": "node --env-file=.env.local scripts/rls-negative-test.mjs",
     "test:create-user": "node --env-file=.env.local scripts/create-test-user.mjs"
   },
