@@ -38,6 +38,10 @@ Atualize a branch `TESTES` e instale as dependências pela opção 1 do `FisioZa
 
 Abra o menu e selecione **15 — Testar APK com ngrok**, ou execute `npm run dev:tunnel`. O frontend escuta somente em `http://127.0.0.1:3847`; o backend em `http://127.0.0.1:3848`. Se uma porta estiver ocupada, encerre o processo que você iniciou nela e tente novamente; o launcher não troca essas portas.
 
+A opção 15 atualiza as dependências antes de iniciar: `npm ci --include=dev` na raiz e `npm install --include=dev` no backend (que ainda não possui lockfile). Isso inclui `jsdom`, `@testing-library/react` e os tipos usados na verificação TypeScript dos testes pelo build. Uma falha na instalação interrompe o fluxo antes de abrir ngrok. Para executar diretamente no terminal, atualize as dependências com esses comandos antes de `npm run dev:tunnel`; não use uma instalação que omita dependências de desenvolvimento para compilar localmente.
+
+Se aparecer `TS2307: Cannot find module 'jsdom'` ou `@testing-library/react`, a compilação não terminou e o aplicativo ainda não está pronto para acesso. Execute `npm ci --include=dev` na raiz e reinicie a opção 15. Não ignore erros de TypeScript. O aviso gratuito **Visit Site** é uma etapa separada: toque nele somente depois de o launcher terminar de iniciar e exibir o link HTTPS.
+
 O Supabase configurado precisa ser um ambiente de teste acessível por HTTPS pelo celular. `NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321` não funciona no APK externo; nessa configuração o launcher aborta. Esta entrega não cria um túnel para o banco local nem altera o projeto Supabase.
 
 Copie o **link HTTPS exibido** para o APK debug. Um único túnel atende a interface e `/backend/*`, encaminhado pelo Next.js ao backend local. No celular não use `localhost`, IP HTTP, link da API separado ou o endereço de produção da Vercel. Mantenha o computador e o terminal ativos. CTRL+C encerra ngrok/frontend/backend. O domínio pode mudar ao reiniciar; nesse caso reabra o APK e informe o novo endereço.

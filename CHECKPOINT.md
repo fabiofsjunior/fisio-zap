@@ -1,5 +1,10 @@
 # FisioZap — Checkpoint global para agentes
 
+## Correção de homologação do túnel — 13/10/2026
+- Base `TESTES`: `33d42149517b7de550771d019550223133fb6b86`, PR #51 integrada, CI #203/#204 aprovados. Branch `feature/local-tunnel-dependencies`, vinculada à issue #38.
+- Log do proprietário mostrou falha TS2307 por ausência de jsdom/testing-library antes de iniciar o frontend. Opção 15 passa a sincronizar dependências incluindo dev antes de abrir ngrok; instalação falha interrompe o fluxo. Backend usa npm install porque não possui lockfile.
+- Aviso Visit Site do ngrok é independente do erro de build. Homologação real Windows/APK ainda depende do proprietário; nenhuma mudança de banco remoto ou main.
+
 ## Sprint S10.3 — 12/10/2026
 - Estado remoto reinspecionado: `TESTES` em `e7ff6fe9bc698d99a932ff2fc6c6e589ce910d6a`, PR #49 integrada, CI da PR #201 e pós-merge #202 aprovados 4/4; nenhuma PR aberta no início. `main` permanece `ffeef4a72fe8c695ef7bdf655c8beb0aceeeee2d`.
 - S10.3 em `feature/s10-team-pagination`, issue #50: páginas limitadas por cursor e controles de função alinhados ao proprietário canônico. Contrato e homologação em `docs/S10-PAGINACAO-EQUIPE.md`.
