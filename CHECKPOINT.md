@@ -1,5 +1,11 @@
 # FisioZap — Checkpoint global para agentes
 
+## APK e diagnóstico de login — 13/10/2026
+- Base remota `TESTES`: `4867bc340211eb0a050f8908fad7c87c6e61a87f`, PR #52 integrada, CI #205/#206 aprovados 4/4. Branch `feature/android-tunnel-login`, issues #36/#38 abertas para homologação.
+- APK debug 0.1.1/code2 abre o túnel autorizado diretamente em /login e usa ícone F branco sobre preto. Release continua exigindo URL explícita; regras HTTPS/origin/TLS preservadas. Recuperação de endereço disponível no menu nativo.
+- Smoke corrigido para contrato read_only e opção16 com portas3847/3848; valida TESTE/ADMIN opcional e diferencia erros sem imprimir credenciais. Rota de login distingue e-mail não confirmado e indisponibilidade e não registra email/mensagens brutas.
+- Arquivo `.env.local` do proprietário não está disponível neste executor; autenticação real das contas permanece não validada. Não houve criação/redefinição de contas ou alteração em banco remoto. Build Android e testes dependem do CI oficial.
+
 ## Correção de homologação do túnel — 13/10/2026
 - Base `TESTES`: `33d42149517b7de550771d019550223133fb6b86`, PR #51 integrada, CI #203/#204 aprovados. Branch `feature/local-tunnel-dependencies`, vinculada à issue #38.
 - Log do proprietário mostrou falha TS2307 por ausência de jsdom/testing-library antes de iniciar o frontend. Opção 15 passa a sincronizar dependências incluindo dev antes de abrir ngrok; instalação falha interrompe o fluxo. Backend usa npm install porque não possui lockfile.

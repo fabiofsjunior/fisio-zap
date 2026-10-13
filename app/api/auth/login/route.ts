@@ -5,8 +5,8 @@ import { cookies } from 'next/headers';
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const email = typeof body.email === 'string' ? body.email.trim() : '';
-    const password = typeof body.password === 'string' ? body.password : '';
+    const email = typeof body?.email === 'string' ? body.email.trim() : '';
+    const password = typeof body?.password === 'string' ? body.password : '';
 
     if (!email || !password) {
       return NextResponse.json({ error: 'E-mail e senha são obrigatórios.' }, { status: 400 });
@@ -41,27 +41,29 @@ export async function POST(request: Request) {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
-      console.error('[FisioZap auth] signInWithPassword falhou:', {
-        email,
-        message: error.message,
+      const invalidCredentials = error.code === 'invalid_credentials' || error.message === 'Invalid login credentials';
+      const confirmationRequired = error.code === 'email_not_confirmed';
+      console.error('[FisioZap auth] Login recusado ou indisponível.', {
         status: error.status,
-        code: error.code,
+        reason: invalidCredentials ? 'invalid_credentials' : confirmationRequired ? 'email_not_confirmed' : 'provider_unavailable',
       });
 
       return NextResponse.json(
         {
           error:
-            error.message === 'Invalid login credentials'
+            invalidCredentials
               ? 'E-mail ou senha inválidos.'
+              : confirmationRequired
+                ? 'Confirme o e-mail da conta no Supabase de homologação antes de entrar.'
               : 'Não foi possível entrar. Verifique a configuração do Supabase e tente novamente.',
         },
-        { status: 401 },
+        { status: invalidCredentials || confirmationRequired ? 401 : 503 },
       );
     }
 
     return response;
-  } catch (error) {
-    console.error('[FisioZap auth] erro inesperado no login:', error);
+  } catch {
+    console.error('[FisioZap auth] Erro inesperado ao processar o login.');
     return NextResponse.json({ error: 'Não foi possível processar o login.' }, { status: 500 });
   }
 }

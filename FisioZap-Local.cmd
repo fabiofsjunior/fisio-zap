@@ -28,6 +28,7 @@ echo  [6] Atualizar codigo da branch atual
 echo.
 echo  TESTES E VALIDACAO
 echo  [7] Smoke test
+echo  [16] Validar login e smoke do tunel - portas 3847/3848
 echo  [8] Criar usuario de teste
 echo  [9] Bootstrap das contas de teste
 echo  [10] Teste RLS
@@ -58,6 +59,7 @@ if "%OP%"=="12" goto HEALTH
 if "%OP%"=="13" goto BUILD
 if "%OP%"=="14" goto OPEN
 if "%OP%"=="15" goto TUNNEL
+if "%OP%"=="16" goto SMOKE_TUNNEL
 if "%OP%"=="0" goto END
 
 echo.
@@ -293,6 +295,28 @@ if "%SMOKE_RC%"=="0" (
   echo SMOKE TEST: OK
 ) else (
   echo SMOKE TEST: FALHOU - codigo %SMOKE_RC%
+)
+pause
+goto MENU
+
+:SMOKE_TUNNEL
+cls
+if not exist "%ENV_FILE%" (
+  echo ERRO: .env.local nao encontrado.
+  pause
+  goto MENU
+)
+echo Mantenha a opcao 15 ativa em outro terminal durante este teste.
+echo Validando as contas existentes no Supabase configurado, sem criar ou redefinir usuarios.
+pushd "%ROOT%"
+call npm run test:smoke:tunnel
+set "SMOKE_TUNNEL_RC=%ERRORLEVEL%"
+popd
+echo.
+if "%SMOKE_TUNNEL_RC%"=="0" (
+  echo LOGIN E SMOKE DO TUNEL: OK
+) else (
+  echo LOGIN E SMOKE DO TUNEL: FALHOU - confira o diagnostico acima.
 )
 pause
 goto MENU

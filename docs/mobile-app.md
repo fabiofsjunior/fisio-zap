@@ -14,9 +14,9 @@ O documento anterior previa avaliar Capacitor. Para esta entrega foi escolhido u
 
 ## Endereço do aplicativo
 
-O aplicativo precisa de endereço HTTPS válido e acessível. O debug permite configurar esse endereço; o release requer endereço fixo na compilação pela propriedade Gradle `WEB_APP_URL`. URLs HTTP, `file:`, `data:` e certificados TLS inválidos não são aceitos. Não desative a validação TLS para testar.
+O APK debug abre por padrão `https://oxygen-nag-jolly.ngrok-free.dev/login`, sem solicitar endereço na primeira execução. O menu nativo de debug mantém a opção **Alterar endereço do aplicativo** para recuperação ou outro host de teste; a alteração vale somente durante aquela execução. Também é possível configurar `WEB_APP_URL` na compilação debug. O release continua exigindo endereço fixo e explícito pela propriedade Gradle `WEB_APP_URL` e nunca herda o endereço ngrok padrão. URLs HTTP, `file:`, `data:` e certificados TLS inválidos não são aceitos. Não desative a validação TLS para testar.
 
-O APK mostra a versão publicada no endereço configurado. Empacotar não publica automaticamente `TESTES`: o site atualmente em `main` pode ter funcionalidades anteriores. Para homologar o Chat recente, use um host HTTPS autorizado. Não ativar Vercel Preview nem promover `main` como atalho. O app não leva servidor ou banco embutido e não funciona como aplicação clínica offline.
+O APK debug identifica a versão 0.1.1 (version code 2) e mostra a versão publicada no endereço configurado. Empacotar não publica automaticamente `TESTES`: o site atualmente em `main` pode ter funcionalidades anteriores. Para homologar o Chat recente, use um host HTTPS autorizado. Não ativar Vercel Preview nem promover `main` como atalho. O app não leva servidor ou banco embutido e não funciona como aplicação clínica offline.
 
 ## Segurança e mídia
 

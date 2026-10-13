@@ -7,6 +7,7 @@ plugins {
 }
 
 val webAppUrl = providers.gradleProperty("WEB_APP_URL").orNull?.trim().orEmpty()
+val debugWebAppUrl = webAppUrl.ifBlank { "https://oxygen-nag-jolly.ngrok-free.dev/login" }
 fun buildConfigString(value: String) = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
 android {
@@ -17,8 +18,8 @@ android {
         applicationId = "com.fisiozap.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resValue("string", "app_name", "FisioZap")
     }
@@ -31,7 +32,7 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             resValue("string", "app_name", "FisioZap Debug")
-            buildConfigField("String", "WEB_APP_URL", buildConfigString(webAppUrl))
+            buildConfigField("String", "WEB_APP_URL", buildConfigString(debugWebAppUrl))
         }
         release {
             isMinifyEnabled = false

@@ -15,14 +15,14 @@ The GitHub Actions workflow installs these build tools, runs `testDebugUnitTest`
 
 ## Configure and run a debug build
 
-Set `WEB_APP_URL` to an authorized, reachable HTTPS test host. Do not use a Vercel Preview URL, a production secret, or an unapproved tenant. The URL is supplied only at build time and is not written to logs or persisted by the app. When it is omitted, the debug app opens a small setup screen where a developer may enter a test URL for that run.
+Debug builds without `WEB_APP_URL` open `https://oxygen-nag-jolly.ngrok-free.dev/login` directly. The debug menu keeps an option to change the address for recovery or another test host; the entered address is used for that run only. You may also set `WEB_APP_URL` to an authorized, reachable HTTPS test host at build time. Do not use a Vercel Preview URL, a production secret, or an unapproved tenant. The URL is not written to logs or persisted by the app.
 
 ```sh
 cd mobile/android
 gradle --no-daemon testDebugUnitTest assembleDebug
 ```
 
-To include a default test host in that local debug build, add `-PWEB_APP_URL=https://<authorized-test-host>` to the Gradle command. The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+To override the default test host in that local debug build, add `-PWEB_APP_URL=https://<authorized-test-host>` to the Gradle command. The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
 For release variants, Gradle requires a fixed HTTPS base URL at build time:
 
@@ -30,7 +30,9 @@ For release variants, Gradle requires a fixed HTTPS base URL at build time:
 gradle --no-daemon assembleRelease -PWEB_APP_URL=https://<approved-host>
 ```
 
-The configured base URL must not contain credentials, a query, or a fragment. Release builds hide the URL setup screen. TLS certificate errors are always blocked, and cleartext HTTP is disabled in all variants. Do not store production URLs or credentials in Gradle files, `gradle.properties`, or this repository.
+The configured URL must not contain credentials, a query, or a fragment. Release builds still require an explicit `WEB_APP_URL`, hide the debug recovery menu, and do not inherit the ngrok debug default. TLS certificate errors are always blocked, and cleartext HTTP is disabled in all variants. Do not store production URLs or credentials in Gradle files, `gradle.properties`, or this repository.
+
+The launcher icon is a native adaptive/vector icon: a white “F” on a black background. The debug APK version is 0.1.1 (version code 2).
 
 ## App behavior
 
