@@ -22,7 +22,7 @@ const errorMessage = Object.freeze({
   NGROK_EXIT: 'O processo ngrok encerrou antes de concluir a inicialização.',
   BACKEND_START: 'O backend local não iniciou corretamente.',
   FRONTEND_START: 'O frontend local não iniciou corretamente.',
-  BUILD_FAILED: 'A compilação local do frontend falhou.',
+  BUILD_FAILED: 'A compilação local do frontend falhou. Atualize as dependências com npm ci --include=dev e tente novamente; se persistir, confira o erro de compilação acima.',
   ENV_MISSING: 'Configure .env.local com o Supabase de homologação antes de iniciar o túnel.',
   SUPABASE_URL_INVALID: 'NEXT_PUBLIC_SUPABASE_URL deve ser HTTPS e apontar para um host Supabase de homologação alcançável fora do loopback local.',
   SUPABASE_ANON_KEY_MISSING: 'Configure NEXT_PUBLIC_SUPABASE_ANON_KEY em .env.local antes de iniciar o túnel.',

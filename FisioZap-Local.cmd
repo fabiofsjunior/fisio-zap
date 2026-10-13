@@ -74,7 +74,7 @@ if not exist "%FRONT_DIR%package.json" (
   goto MENU
 )
 pushd "%FRONT_DIR%"
-call npm install
+call npm install --include=dev
 set "FRONT_RC=%ERRORLEVEL%"
 popd
 if not "%FRONT_RC%"=="0" (
@@ -90,7 +90,7 @@ if not exist "%BACK_DIR%\package.json" (
   goto MENU
 )
 pushd "%BACK_DIR%"
-call npm install
+call npm install --include=dev
 set "BACK_RC=%ERRORLEVEL%"
 popd
 if not "%BACK_RC%"=="0" (
@@ -180,6 +180,26 @@ if errorlevel 1 (
 )
 if not exist "%ENV_FILE%" (
   echo Configure .env.local pela opcao 2 primeiro.
+  pause
+  goto MENU
+)
+pushd "%ROOT%"
+echo [FisioZap] Atualizando dependencias do frontend, incluindo ferramentas de build e teste...
+call npm ci --include=dev
+set "TUNNEL_FRONT_RC=%ERRORLEVEL%"
+popd
+if not "%TUNNEL_FRONT_RC%"=="0" (
+  echo ERRO ao preparar dependencias do frontend. O tunel nao foi iniciado.
+  pause
+  goto MENU
+)
+pushd "%BACK_DIR%"
+echo [FisioZap] Preparando dependencias do backend...
+call npm install --include=dev
+set "TUNNEL_BACK_RC=%ERRORLEVEL%"
+popd
+if not "%TUNNEL_BACK_RC%"=="0" (
+  echo ERRO ao preparar dependencias do backend. O tunel nao foi iniciado.
   pause
   goto MENU
 )
